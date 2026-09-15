@@ -1,0 +1,81 @@
+﻿<svg xmlns=http://www.w3.org/2000/svg viewBox=0 0 600 750 fill=none>
+  <defs>
+    <linearGradient id=bgGrad x1=0 y1=0 x2=1 y2=1>
+      <stop offset=0% stop-color=#EBF4F0/>
+      <stop offset=50% stop-color=#F7FBF9/>
+      <stop offset=100% stop-color=#FAF9F6/>
+    </linearGradient>
+    <linearGradient id=skinGrad x1=0 y1=0 x2=0 y2=1>
+      <stop offset=0% stop-color=#DEB097/>
+      <stop offset=100% stop-color=#CD987E/>
+    </linearGradient>
+    <linearGradient id=shirtGrad x1=0 y1=0 x2=1 y2=1>
+      <stop offset=0% stop-color=#F2EFE9/>
+      <stop offset=100% stop-color=#E3DDD3/>
+    </linearGradient>
+    <linearGradient id=hairGrad x1=0 y1=0 x2=1 y2=1>
+      <stop offset=0% stop-color=#282220/>
+      <stop offset=100% stop-color=#1A1514/>
+    </linearGradient>
+    <linearGradient id=leafGrad x1=0 y1=0 x2=1 y2=1>
+      <stop offset=0% stop-color=#8FB8A5/>
+      <stop offset=100% stop-color=#558C77/>
+    </linearGradient>
+  </defs>
+
+  <!-- Background Arch Surface -->
+  <rect width=600 height=750 fill=url(#bgGrad)/>
+  
+  <!-- Subtle Soft Sun / Aura Circle -->
+  <circle cx=420 cy=240 r=160 fill=#FFF3EB opacity=0.8/>
+  <circle cx=280 cy=360 r=220 fill=#E8F3EE opacity=0.6/>
+
+  <!-- Botanical Leaf Sprigs Behind -->
+  <g opacity=0.4 stroke=#8FB8A5 stroke-width=2 fill=none>
+    <path d=M480 340 C 530 300, 560 220, 540 160 C 500 180, 470 240, 480 340 Z/>
+    <path d=M480 340 L 530 200/>
+    <path d=M500 280 L 535 270/>
+    <path d=M515 240 L 542 225/>
+  </g>
+
+  <!-- Shoulders / Knit Sweater -->
+  <path d=M120 750 C 140 590, 200 540, 320 540 C 440 540, 500 590, 520 750 Z fill=url(#shirtGrad)/>
+  <path d=M260 540 C 290 560, 350 560, 380 540 C 370 590, 270 590, 260 540 Z fill=#D5CEC2 opacity=0.6/>
+
+  <!-- Neck -->
+  <path d=M280 440 L 280 550 C 310 565, 340 565, 360 550 L 360 440 Z fill=url(#skinGrad)/>
+
+  <!-- Face Contour (Upward, Gentle Smile, Confident) -->
+  <path d=M260 330 C 260 440, 300 480, 365 470 C 420 460, 445 400, 445 320 C 445 230, 390 190, 330 200 C 275 210, 260 260, 260 330 Z fill=url(#skinGrad)/>
+
+  <!-- Hair Base & Bun -->
+  <path d=M240 310 C 230 210, 290 130, 380 140 C 440 145, 475 190, 475 280 C 455 240, 420 220, 360 225 C 295 230, 260 270, 240 310 Z fill=url(#hairGrad)/>
+  <!-- Hair Bun at Back -->
+  <circle cx=475 cy=210 r=60 fill=url(#hairGrad)/>
+
+  <!-- Ear -->
+  <path d=M265 340 C 255 340, 250 360, 255 380 C 260 395, 270 395, 275 380 Z fill=#D39F85/>
+  <circle cx=262 cy=385 r=4 fill=#D98A52/>
+
+  <!-- Facial Features (Soft, Minimal, Stylized) -->
+  <!-- Closed/Content Eye turned slightly up -->
+  <path d=M375 315 C 390 310, 405 315, 415 325 stroke=#4A342B stroke-width=2.5 stroke-linecap=round fill=none/>
+  <!-- Eyebrow -->
+  <path d=M365 295 C 385 285, 410 290, 425 305 stroke=#282220 stroke-width=3 stroke-linecap=round fill=none/>
+  <!-- Gentle Nose -->
+  <path d=M420 325 C 425 345, 425 365, 410 375 L 398 375 stroke=#B87D65 stroke-width=2 stroke-linecap=round fill=none/>
+  <!-- Warm Smiling Lips -->
+  <path d=M370 415 C 385 430, 405 430, 420 415 stroke=#B4594A stroke-width=3 stroke-linecap=round fill=none/>
+  <path d=M375 415 C 390 420, 405 420, 415 415 fill=#D37C6D opacity=0.3/>
+
+  <!-- Foreground Elegant Botanical Branch -->
+  <g fill=url(#leafGrad)>
+    <!-- Branch Stem -->
+    <path d=M40 720 C 140 680, 220 620, 290 560 stroke=#558C77 stroke-width=3 stroke-linecap=round fill=none/>
+    <!-- Leaves -->
+    <path d=M120 685 C 130 655, 170 650, 180 675 C 160 690, 130 695, 120 685 Z/>
+    <path d=M180 650 C 205 620, 240 630, 235 660 C 210 665, 185 665, 180 650 Z/>
+    <path d=M230 610 C 240 575, 280 575, 290 605 C 270 620, 240 620, 230 610 Z/>
+    <path d=M280 565 C 310 540, 340 550, 335 580 C 310 585, 290 580, 280 565 Z/>
+  </g>
+</svg>

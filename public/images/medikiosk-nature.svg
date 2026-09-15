@@ -1,0 +1,44 @@
+﻿<svg xmlns=http://www.w3.org/2000/svg viewBox=0 0 600 500 fill=none>
+  <defs>
+    <linearGradient id=skyGrad x1=0 y1=0 x2=0 y2=1>
+      <stop offset=0% stop-color=#FFEEDD/>
+      <stop offset=40% stop-color=#F7ECD8/>
+      <stop offset=100% stop-color=#E8F4EF/>
+    </linearGradient>
+    <linearGradient id=sunGrad x1=0 y1=0 x2=1 y2=1>
+      <stop offset=0% stop-color=#FFFDF7/>
+      <stop offset=100% stop-color=#FCD5A3/>
+    </linearGradient>
+    <linearGradient id=farHill x1=0 y1=0 x2=0 y2=1>
+      <stop offset=0% stop-color=#A5C2B5/>
+      <stop offset=100% stop-color=#7CA393/>
+    </linearGradient>
+    <linearGradient id=midHill x1=0 y1=0 x2=0 y2=1>
+      <stop offset=0% stop-color=#609480/>
+      <stop offset=100% stop-color=#467362/>
+    </linearGradient>
+    <linearGradient id=nearHill x1=0 y1=0 x2=0 y2=1>
+      <stop offset=0% stop-color=#366453/>
+      <stop offset=100% stop-color=#234538/>
+    </linearGradient>
+  </defs>
+
+  <!-- Sky -->
+  <rect width=600 height=500 fill=url(#skyGrad)/>
+
+  <!-- Morning Sun -->
+  <circle cx=200 cy=220 r=100 fill=url(#sunGrad) opacity=0.8/>
+  <circle cx=200 cy=220 r=150 fill=#FFFDF7 opacity=0.3/>
+
+  <!-- Distant Mountain Ranges (Western Ghats / Himalayan foothills) -->
+  <path d=M0 260 C 90 230, 160 210, 240 240 C 320 270, 420 230, 520 250 L 600 270 L 600 500 L 0 500 Z fill=url(#farHill) opacity=0.7/>
+
+  <!-- Mid-distance lush ridge -->
+  <path d=M0 310 C 120 280, 220 330, 340 300 C 440 270, 510 320, 600 300 L 600 500 L 0 500 Z fill=url(#midHill)/>
+
+  <!-- Foreground rolling tea/herb plantations -->
+  <path d=M0 380 C 80 360, 180 390, 280 370 C 380 350, 480 390, 600 370 L 600 500 L 0 500 Z fill=url(#nearHill)/>
+
+  <!-- Soft Mist Layers -->
+  <path d=M0 330 C 150 310, 300 350, 600 320 L 600 350 L 0 360 Z fill=#F4FAF7 opacity=0.4/>
+</svg>

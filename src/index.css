@@ -1,0 +1,79 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  :root {
+    /* Background: Pure White (#FFFFFF) */
+    --background: 0 0% 100%;
+    /* Primary Text: Ink (#1C1B19) */
+    --foreground: 36 6% 11%;
+
+    /* Card Surfaces: White (#FFFFFF) */
+    --card: 0 0% 100%;
+    --card-foreground: 36 6% 11%;
+
+    /* Popover */
+    --popover: 0 0% 100%;
+    --popover-foreground: 36 6% 11%;
+
+    /* Primary: Pine (#1F3A34) */
+    --primary: 168 30% 17%;
+    --primary-foreground: 0 0% 100%;
+
+    /* Secondary / Success: Sage (#6B8F71) */
+    --secondary: 130 14% 49%;
+    --secondary-foreground: 0 0% 100%;
+
+    /* Muted Surfaces (#FAF9F6) & Secondary Text (#5F625E) */
+    --muted: 43 27% 97%;
+    --muted-foreground: 105 2% 38%;
+
+    /* Accent: Turmeric (#C97D3D) */
+    --accent: 27 56% 51%;
+    --accent-foreground: 0 0% 100%;
+
+    /* Destructive */
+    --destructive: 0 52% 47%;
+    --destructive-foreground: 0 0% 100%;
+
+    /* Borders & Hairlines: (#E5E5E0) */
+    --border: 60 7% 89%;
+    --input: 60 7% 89%;
+    --ring: 168 30% 17%;
+
+    --radius: 0.5rem;
+  }
+
+  /* One consistent light appearance — disable dark overrides */
+  .dark {
+    --background: 0 0% 100%;
+    --foreground: 36 6% 11%;
+    --card: 0 0% 100%;
+    --card-foreground: 36 6% 11%;
+    --popover: 0 0% 100%;
+    --popover-foreground: 36 6% 11%;
+    --primary: 168 30% 17%;
+    --primary-foreground: 0 0% 100%;
+    --secondary: 130 14% 49%;
+    --secondary-foreground: 0 0% 100%;
+    --muted: 43 27% 97%;
+    --muted-foreground: 105 2% 38%;
+    --accent: 27 56% 51%;
+    --accent-foreground: 0 0% 100%;
+    --destructive: 0 52% 47%;
+    --destructive-foreground: 0 0% 100%;
+    --border: 60 7% 89%;
+    --input: 60 7% 89%;
+    --ring: 168 30% 17%;
+  }
+
+  * {
+    @apply border-border;
+  }
+
+  body {
+    @apply bg-background text-foreground;
+    font-feature-settings: "rlig" 1, "calt" 1;
+  }
+}

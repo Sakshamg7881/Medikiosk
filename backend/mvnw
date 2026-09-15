@@ -1,0 +1,8 @@
+#!/bin/sh
+# MediKiosk Maven Wrapper Shell Script
+
+if [ -f "/c/Program Files/JetBrains/IntelliJ IDEA 2025.3.2/plugins/maven/lib/maven3/bin/mvn" ]; then
+    "/c/Program Files/JetBrains/IntelliJ IDEA 2025.3.2/plugins/maven/lib/maven3/bin/mvn" "$@"
+else
+    mvn "$@"
+fi
