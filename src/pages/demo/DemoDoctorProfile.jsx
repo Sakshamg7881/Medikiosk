@@ -1,4 +1,4 @@
-﻿import React, { useState } from 'react'
+import React, { useState } from 'react'
 import { useParams, Link, useNavigate } from 'react-router-dom'
 import { Card, CardHeader, CardTitle, CardDescription, CardContent, CardFooter } from '@/components/ui/Card'
 import { Button } from '@/components/ui/Button'
@@ -131,7 +131,7 @@ export function DemoDoctorProfile() {
 
               <div className="p-3 bg-muted/30 rounded-lg border border-border/60 text-right self-start sm:self-auto min-w-[140px]">
                 <span className="text-[10px] font-mono text-muted-foreground uppercase block">Consultation Fee</span>
-                <div className="font-serif text-2xl font-bold text-foreground">â‚¹{doctor.consultationFee}</div>
+                <div className="font-serif text-2xl font-bold text-foreground">₹{doctor.consultationFee}</div>
                 <span className="text-[10px] text-muted-foreground font-mono">In-Person + AI Pre-Intake</span>
               </div>
             </div>

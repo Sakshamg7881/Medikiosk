@@ -1,4 +1,4 @@
-﻿import React from 'react'
+import React from 'react'
 import { Link } from 'react-router-dom'
 import { Card, CardHeader, CardTitle, CardDescription, CardContent } from '@/components/ui/Card'
 import { Button } from '@/components/ui/Button'
@@ -49,12 +49,12 @@ export function PatientPrivacy() {
         </p>
       </div>
 
-      {/* Future Integration Banner â€” Planned Notice */}
+      {/* Future Integration Banner — Planned Notice */}
       <div className="p-4 rounded-lg border border-primary/30 bg-primary/5 text-foreground space-y-1.5">
         <div className="flex items-center gap-2">
           <Layers className="h-5 w-5 text-primary shrink-0" />
           <span className="font-semibold text-sm text-foreground">
-            ABHA / ABDM Integration â€” Planned (Future Milestone)
+            ABHA / ABDM Integration — Planned (Future Milestone)
           </span>
           <Badge variant="outline" className="text-[10px] uppercase font-mono ml-auto">
             Roadmap

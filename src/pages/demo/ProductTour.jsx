@@ -1,4 +1,4 @@
-﻿import React, { useState } from 'react'
+import React, { useState } from 'react'
 import { Link } from 'react-router-dom'
 import { Card, CardHeader, CardTitle, CardDescription, CardContent, CardFooter } from '@/components/ui/Card'
 import { Button } from '@/components/ui/Button'
@@ -164,7 +164,7 @@ export function ProductTour() {
     {
       name: 'STARTER',
       target: 'For solo AYUSH vaidyas and small neighborhood clinics',
-      price: 'â‚¹999',
+      price: '₹999',
       period: '/ month',
       features: [
         'Single MediKiosk terminal pairing',
@@ -178,7 +178,7 @@ export function ProductTour() {
     {
       name: 'CLINIC',
       target: 'For growing AYUSH polyclinics & Panchakarma centres',
-      price: 'â‚¹2,499',
+      price: '₹2,499',
       period: '/ month',
       features: [
         'Up to 3 MediKiosk terminal pairings',
@@ -437,7 +437,7 @@ export function ProductTour() {
                   <div className="p-2 rounded bg-muted/30 border border-border/50 flex items-center justify-between font-mono text-[11px] mt-2">
                     <div>
                       <span className="text-muted-foreground text-[10px] block">Fee</span>
-                      <strong className="text-foreground">â‚¹{clinic.consultationFee}</strong>
+                      <strong className="text-foreground">₹{clinic.consultationFee}</strong>
                     </div>
                     <div className="text-right">
                       <span className="text-muted-foreground text-[10px] block">Specialists</span>

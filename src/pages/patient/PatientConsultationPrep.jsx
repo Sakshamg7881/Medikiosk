@@ -1,4 +1,4 @@
-﻿import React, { useState } from 'react'
+import React, { useState } from 'react'
 import { useParams, Link, useNavigate } from 'react-router-dom'
 import { Card, CardHeader, CardTitle, CardDescription, CardContent, CardFooter } from '@/components/ui/Card'
 import { Button } from '@/components/ui/Button'
@@ -102,7 +102,7 @@ export function PatientConsultationPrep() {
           </div>
 
           <Badge variant="secondary" className="text-xs font-mono shrink-0">
-            â‚¹{doctor.consultationFee}
+            ₹{doctor.consultationFee}
           </Badge>
         </CardContent>
       </Card>

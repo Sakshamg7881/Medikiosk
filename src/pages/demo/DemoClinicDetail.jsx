@@ -1,4 +1,4 @@
-﻿import React, { useState } from 'react'
+import React, { useState } from 'react'
 import { useParams, Link } from 'react-router-dom'
 import { Card, CardHeader, CardTitle, CardDescription, CardContent, CardFooter } from '@/components/ui/Card'
 import { Button } from '@/components/ui/Button'
@@ -178,7 +178,7 @@ export function DemoClinicDetail() {
 
           <CardFooter className="p-4 border-t border-border flex flex-wrap items-center justify-between gap-3 bg-muted/10">
             <div className="font-mono text-xs text-muted-foreground">
-              Consultation Fee: <strong className="text-foreground text-sm font-semibold">â‚¹{clinic.consultationFee}</strong>
+              Consultation Fee: <strong className="text-foreground text-sm font-semibold">₹{clinic.consultationFee}</strong>
             </div>
 
             <div className="flex items-center gap-2">
@@ -250,7 +250,7 @@ export function DemoClinicDetail() {
                       <span>•</span>
                       <span>Languages: {doc.languages.join(', ')}</span>
                       <span>•</span>
-                      <span className="text-foreground font-semibold">Fee: â‚¹{doc.consultationFee}</span>
+                      <span className="text-foreground font-semibold">Fee: ₹{doc.consultationFee}</span>
                     </div>
 
                     <p className="text-xs text-muted-foreground pt-1 line-clamp-2">

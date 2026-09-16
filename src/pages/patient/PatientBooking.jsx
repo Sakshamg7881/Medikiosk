@@ -1,4 +1,4 @@
-﻿import React, { useState, useEffect } from 'react'
+import React, { useState, useEffect } from 'react'
 import { useParams, useNavigate, Link } from 'react-router-dom'
 import { Card, CardHeader, CardTitle, CardDescription, CardContent, CardFooter } from '@/components/ui/Card'
 import { Button } from '@/components/ui/Button'
@@ -32,12 +32,18 @@ export function PatientBooking() {
 
   const allDoctors = getAllDoctors()
 
+  // Selected clinic (from session or default c1)
+  const currentClinic = getClinicById(session.selectedClinicId) || getClinicById('c1')
+
+  // Filter doctors for the selected clinic
+  const clinicDoctors = allDoctors.filter((d) => d.clinicId === currentClinic?.id)
+  const availableDoctors = clinicDoctors.length > 0 ? clinicDoctors : allDoctors
+
   // Selected doctor
   const [selectedDocId, setSelectedDocId] = useState(
-    doctorId ? Number(doctorId) : session.selectedDoctorId || allDoctors[0]?.id || 101
+    doctorId ? Number(doctorId) : (session.selectedDoctorId || availableDoctors[0]?.id || 101)
   )
-  const currentDoctor = getDoctorById(selectedDocId) || allDoctors[0]
-  const currentClinic = currentDoctor ? getClinicById(currentDoctor.clinicId) : null
+  const currentDoctor = getDoctorById(selectedDocId) || availableDoctors[0] || allDoctors[0]
 
   // Booking Form State
   const [consultationType, setConsultationTypeState] = useState('First Consultation') // First Consultation, Follow-up
@@ -98,12 +104,9 @@ export function PatientBooking() {
 
       // Update session references
       setSelectedDoctor(currentDoctor.id)
-      if (currentClinic) setSelectedClinic(currentClinic.id)
-
       navigate(`/patient/appointment-confirmation/${appt.id}`)
-    } catch (err) {
-      console.error('Failed to book consultation:', err)
-      alert('Failed to book appointment. Please retry.')
+    } catch (error) {
+      console.error('Booking failed:', error)
     } finally {
       setIsSubmitting(false)
     }
@@ -111,12 +114,12 @@ export function PatientBooking() {
 
   return (
     <div className="max-w-2xl mx-auto w-full space-y-6 pb-16">
-      {/* Top Breadcrumb */}
+      {/* Breadcrumb Header */}
       <div className="flex items-center justify-between border-b border-border pb-3">
-        <Link to="/patient/clinics">
-          <Button variant="ghost" size="sm" className="gap-1.5 text-muted-foreground hover:text-foreground text-xs">
+        <Link to="/patient/export">
+          <Button variant="ghost" size="sm" className="gap-1.5 text-muted-foreground hover:text-foreground">
             <ArrowLeft className="h-4 w-4" />
-            <span>Back to Clinics</span>
+            <span>Back to Slip</span>
           </Button>
         </Link>
         <Badge variant="outline" className="font-mono text-xs">
@@ -134,7 +137,40 @@ export function PatientBooking() {
         </p>
       </div>
 
-      {/* 1. LINKED CASE BANNER (CRITICAL REUSE RULE) */}
+      {/* 1. SELECTED CLINIC DISPLAY (WITH CHANGE CLINIC OPTION) */}
+      <Card className="border-border shadow-xs bg-muted/20">
+        <CardContent className="p-4 flex items-center justify-between gap-3">
+          <div className="flex items-center gap-3 min-w-0">
+            <div className="w-10 h-10 rounded-lg bg-primary/10 text-primary flex items-center justify-center shrink-0">
+              <Building2 className="h-5 w-5" />
+            </div>
+            <div className="min-w-0">
+              <div className="flex items-center gap-2">
+                <span className="text-[10px] font-mono uppercase tracking-wider text-muted-foreground">
+                  Selected Clinic
+                </span>
+                <Badge variant="secondary" className="text-[9px] py-0 font-medium">
+                  {currentClinic?.ayushSystem || 'AYUSH'}
+                </Badge>
+              </div>
+              <h3 className="font-serif font-bold text-sm sm:text-base text-foreground truncate">
+                {currentClinic?.name || 'Ayush Arogya Kendra'}
+              </h3>
+              <p className="text-xs text-muted-foreground truncate">
+                {currentClinic?.area}, {currentClinic?.city}
+              </p>
+            </div>
+          </div>
+
+          <Link to="/patient/clinics" className="shrink-0">
+            <Button variant="outline" size="sm" className="text-xs">
+              Change Clinic
+            </Button>
+          </Link>
+        </CardContent>
+      </Card>
+
+      {/* 2. LINKED CASE BANNER */}
       <Card className="border-2 border-primary/30 shadow-xs bg-primary/5">
         <CardContent className="p-4 flex items-start gap-3">
           <div className="p-2 rounded-md bg-primary/15 text-primary shrink-0 mt-0.5">
@@ -154,14 +190,14 @@ export function PatientBooking() {
               {caseSummary?.chiefComplaint || 'Consultation Intake'}
             </p>
             <p className="text-[11px] text-primary/90 font-medium">
-              âœ“ Your AI intake history, AYUSH indicators, and Prakriti profile will be pre-filled for this doctor. No repeated questions required.
+              ✓ Your AI intake history, AYUSH indicators, and Prakriti profile will be pre-filled for this doctor. No repeated questions required.
             </p>
           </div>
         </CardContent>
       </Card>
 
       <form onSubmit={handleConfirmBooking} className="space-y-6">
-        {/* 2. SELECT DOCTOR */}
+        {/* 3. SELECT DOCTOR */}
         <Card className="border-border shadow-xs">
           <CardHeader className="p-4 pb-3 border-b border-border/70 bg-muted/10">
             <CardTitle className="text-sm font-semibold flex items-center gap-2">
@@ -171,7 +207,7 @@ export function PatientBooking() {
           </CardHeader>
           <CardContent className="p-4 space-y-3">
             <div className="space-y-2">
-              {allDoctors.slice(0, 3).map((doc) => {
+              {availableDoctors.map((doc) => {
                 const isSelected = selectedDocId === doc.id
                 return (
                   <div
@@ -198,7 +234,7 @@ export function PatientBooking() {
                       </div>
                     </div>
                     <div className="text-right">
-                      <span className="font-mono font-bold text-foreground text-xs block">â‚¹{doc.consultationFee}</span>
+                      <span className="font-mono font-bold text-foreground text-xs block">₹{doc.consultationFee}</span>
                       <span className="text-[10px] text-muted-foreground font-mono">Fee</span>
                     </div>
                   </div>
@@ -324,15 +360,15 @@ export function PatientBooking() {
             <div className="p-3 bg-muted/30 rounded-lg border border-border/70 space-y-2">
               <div className="flex items-center justify-between font-mono">
                 <span className="text-muted-foreground">Doctor Consultation Fee:</span>
-                <strong className="text-foreground text-sm">â‚¹{currentDoctor.consultationFee}</strong>
+                <strong className="text-foreground text-sm">₹{currentDoctor.consultationFee}</strong>
               </div>
               <div className="flex items-center justify-between font-mono text-[11px] text-muted-foreground">
                 <span>MediKiosk Kiosk Intake Preparation:</span>
-                <span className="text-secondary font-semibold">Included (â‚¹0)</span>
+                <span className="text-secondary font-semibold">Included (₹0)</span>
               </div>
               <div className="border-t border-border pt-2 flex items-center justify-between font-mono">
                 <span className="font-bold text-foreground">Total Payable at Clinic Desk:</span>
-                <strong className="font-serif text-lg text-primary">â‚¹{currentDoctor.consultationFee}</strong>
+                <strong className="font-serif text-lg text-primary">₹{currentDoctor.consultationFee}</strong>
               </div>
             </div>
 

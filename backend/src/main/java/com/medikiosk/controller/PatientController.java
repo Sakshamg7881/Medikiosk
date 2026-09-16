@@ -29,4 +29,21 @@ public class PatientController {
                 .map(ResponseEntity::ok)
                 .orElse(ResponseEntity.notFound().build());
     }
+
+    @GetMapping("/by-phone/{phone}")
+    public ResponseEntity<Patient> getPatientByPhone(@PathVariable String phone) {
+        return patientRepository.findByPhone(phone)
+                .map(ResponseEntity::ok)
+                .orElse(ResponseEntity.notFound().build());
+    }
+
+    @GetMapping
+    public ResponseEntity<?> getPatients(@RequestParam(required = false) String phone) {
+        if (phone != null && !phone.isBlank()) {
+            return patientRepository.findByPhone(phone)
+                    .map(ResponseEntity::ok)
+                    .orElse(ResponseEntity.notFound().build());
+        }
+        return ResponseEntity.ok(patientRepository.findAll());
+    }
 }

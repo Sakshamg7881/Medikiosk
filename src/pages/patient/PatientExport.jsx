@@ -1,4 +1,4 @@
-﻿import React, { useState, useEffect } from 'react'
+import React, { useState, useEffect } from 'react'
 import { Link } from 'react-router-dom'
 import { Card, CardHeader, CardTitle, CardDescription, CardContent, CardFooter } from '@/components/ui/Card'
 import { Button } from '@/components/ui/Button'
@@ -19,6 +19,7 @@ import {
   Calendar,
 } from 'lucide-react'
 import { getPatientSession, clearPatientSession } from '@/lib/session'
+import { getClinicById } from '@/data/clinicsData'
 import { getCaseSummary } from '@/lib/api'
 import { ClinicalQrCode } from '@/components/common/ClinicalQrCode'
 import { DailyCareCard } from '@/components/patient/DailyCareCard'
@@ -32,6 +33,7 @@ export function PatientExport() {
   const [downloadSuccess, setDownloadSuccess] = useState(false)
 
   const lang = session.preferredLanguage || 'en'
+  const selectedClinic = getClinicById(session.selectedClinicId) || getClinicById('c1')
 
   useEffect(() => {
     const s = getPatientSession()
@@ -55,7 +57,11 @@ export function PatientExport() {
 
   const handleDownloadPdf = () => {
     if (caseSummary) {
-      generateClinicalPdf(caseSummary)
+      generateClinicalPdf({
+        ...caseSummary,
+        selectedClinic: selectedClinic,
+        clinicName: selectedClinic?.name,
+      })
       setDownloadSuccess(true)
       setTimeout(() => setDownloadSuccess(false), 4000)
     }
@@ -107,7 +113,7 @@ export function PatientExport() {
             </span>
           </div>
           <p className="font-mono text-[11px] text-muted-foreground">
-            Kiosk Terminal #04 • Ayush Arogya Kendra • {currentDate} {currentTime}
+            Kiosk Terminal #04 • {selectedClinic?.name || 'MediKiosk Center'} • {currentDate} {currentTime}
           </p>
         </div>
 
@@ -155,22 +161,6 @@ export function PatientExport() {
             <p className="font-mono text-[11px] text-foreground font-semibold pt-1">
               Chamber #2 • Dr. R. Sharma (AYUSH)
             </p>
-          </div>
-
-          {/* Clean Square QR Code Section */}
-          <div className="flex flex-col items-center justify-center p-4 bg-muted/20 rounded-lg border border-border/80 space-y-2.5">
-            <ClinicalQrCode
-              value={`MEDIKIOSK-CASE-${caseId}-${patientName.replace(/\s+/g, '_')}`}
-              size={140}
-            />
-            <div className="text-center space-y-0.5">
-              <span className="font-mono text-xs font-semibold text-foreground block">
-                Scan to view your case (Demo)
-              </span>
-              <span className="text-[10px] font-mono text-muted-foreground block">
-                Clinical intake verification • Prototype demonstration
-              </span>
-            </div>
           </div>
 
           {/* Tear-off divider effect */}

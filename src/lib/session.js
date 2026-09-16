@@ -12,16 +12,18 @@ export function getPatientSession() {
         preferredLanguage: 'hi',
         consentAccepted: false,
         name: '',
+        age: null,
+        gender: '',
         phone: '',
-        selectedClinicId: 'c1',
-        selectedDoctorId: 'd1',
+        selectedClinicId: null,
+        selectedDoctorId: null,
         consultationType: 'AI-Assisted First Consultation',
       }
     }
     const parsed = JSON.parse(raw)
     return {
-      selectedClinicId: 'c1',
-      selectedDoctorId: 'd1',
+      selectedClinicId: null,
+      selectedDoctorId: null,
       consultationType: 'AI-Assisted First Consultation',
       ...parsed,
     }
@@ -33,9 +35,11 @@ export function getPatientSession() {
       preferredLanguage: 'hi',
       consentAccepted: false,
       name: '',
+      age: null,
+      gender: '',
       phone: '',
-      selectedClinicId: 'c1',
-      selectedDoctorId: 'd1',
+      selectedClinicId: null,
+      selectedDoctorId: null,
       consultationType: 'AI-Assisted First Consultation',
     }
   }
@@ -82,6 +86,8 @@ export function setPatientData(patient) {
     ...session,
     patientId: patient.id,
     name: patient.name || session.name,
+    age: patient.age !== undefined ? patient.age : session.age,
+    gender: patient.gender || session.gender,
     phone: patient.phone || session.phone,
     preferredLanguage: patient.preferredLanguage || session.preferredLanguage,
   }

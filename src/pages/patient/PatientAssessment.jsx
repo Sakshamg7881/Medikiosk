@@ -66,8 +66,9 @@ export function PatientAssessment() {
   const [isLongLoading, setIsLongLoading] = useState(false)
   const [hasError, setHasError] = useState(false)
 
-  // Voice Input State
-  const [isListening, setIsListening] = useState(false)
+  // Voice Input Lifecycle: 'IDLE' | 'LISTENING' | 'TRANSCRIBING' | 'READY'
+  const [voiceState, setVoiceState] = useState('IDLE')
+  const isListening = voiceState === 'LISTENING' || voiceState === 'TRANSCRIBING'
   const [voiceNotice, setVoiceNotice] = useState(null)
   const [speechSupported, setSpeechSupported] = useState(true)
 
@@ -221,16 +222,16 @@ export function PatientAssessment() {
     console.log(`[Assessment UI] Language switched to: "${newLang}"`)
 
     // If currently listening, stop so the next voice session uses the new language
-    if (isListening && recognitionRef.current) {
+    if (recognitionRef.current) {
       userExplicitStopRef.current = true
       try {
         recognitionRef.current.stop()
       } catch (e) {}
-      setIsListening(false)
     }
+    setVoiceState('IDLE')
   }
 
-  // Voice Input Toggle (Web Speech API)
+  // Voice Input Toggle (Web Speech API) with IDLE -> LISTENING -> TRANSCRIBING -> READY Lifecycle
   const toggleVoiceRecording = () => {
     const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition
     if (!SpeechRecognition) {
@@ -239,16 +240,16 @@ export function PatientAssessment() {
       return
     }
 
-    if (isListening) {
+    if (voiceState === 'LISTENING' || voiceState === 'TRANSCRIBING') {
       userExplicitStopRef.current = true
       if (recognitionRef.current) {
         try {
           recognitionRef.current.stop()
         } catch (e) {}
       }
-      setIsListening(false)
+      setVoiceState('READY')
       if (inputMessage.trim()) {
-        setVoiceNotice(uiText.reviewVoiceNotice)
+        setVoiceNotice(uiText.micReadyNotice || uiText.reviewVoiceNotice)
       }
       return
     }
@@ -261,13 +262,17 @@ export function PatientAssessment() {
       }
 
       userExplicitStopRef.current = false
+      // Capture base text once at start of recording to prevent duplicate concatenation
       composerBaseTextRef.current = inputMessage.trim()
+      setVoiceState('LISTENING')
+      setVoiceNotice(null)
 
       const recognition = new SpeechRecognition()
-      recognition.continuous = true // Support continuous natural speech
+      recognition.continuous = false
       recognition.interimResults = true
+      recognition.maxAlternatives = 1
 
-      // Map language
+      // Map language (hi -> hi-IN, hinglish -> en-IN, en -> en-IN)
       if (currentLang === 'hi') {
         recognition.lang = 'hi-IN'
       } else {
@@ -275,47 +280,80 @@ export function PatientAssessment() {
       }
 
       recognition.onstart = () => {
-        setIsListening(true)
+        setVoiceState('LISTENING')
         setVoiceNotice(null)
       }
 
       recognition.onresult = (event) => {
-        let finalAccumulated = ''
-        let interimAccumulated = ''
+        setVoiceState('TRANSCRIBING')
+        let finalTranscript = ''
+        let interimTranscript = ''
 
         for (let i = 0; i < event.results.length; i++) {
-          const item = event.results[i]
-          const transcript = item[0]?.transcript || ''
-          if (item.isFinal) {
-            finalAccumulated += transcript + ' '
+          const res = event.results[i]
+          const transcript = res[0]?.transcript || ''
+          if (res.isFinal) {
+            finalTranscript += transcript + ' '
           } else {
-            interimAccumulated += transcript
+            interimTranscript += transcript
           }
         }
 
-        const spoken = (finalAccumulated + interimAccumulated).trim()
-        const base = composerBaseTextRef.current
-        const combined = base ? `${base} ${spoken}` : spoken
-        setInputMessage(combined)
+        const recognized = (finalTranscript + interimTranscript).trim()
+        if (recognized) {
+          const base = composerBaseTextRef.current
+          const combined = base ? `${base} ${recognized}` : recognized
+          setInputMessage(combined)
+        }
       }
 
       recognition.onerror = (event) => {
-        if (event.error === 'not-allowed') {
+        console.warn('Speech recognition error event:', event.error)
+        const isHindi = currentLang === 'hi'
+        if (event.error === 'not-allowed' || event.error === 'service-not-allowed') {
           setVoiceNotice(
-            currentLang === 'hi'
-              ? 'माइक्रोफ़ोन अनुमति नहीं मिली। कृपया अनुमति दें या लिखकर उत्तर दें।'
-              : 'Microphone permission denied. Please enable access or type your symptoms.'
+            isHindi
+              ? 'माइक्रोफ़ोन अनुमति नहीं मिली। कृपया ब्राउज़र में अनुमति दें या लिखकर उत्तर दें।'
+              : 'Microphone permission denied. Please grant microphone access in browser settings or type instead.'
           )
-          setIsListening(false)
-        } else if (event.error !== 'no-speech') {
-          console.warn('Speech recognition notice:', event.error)
+          setVoiceState('IDLE')
+        } else if (event.error === 'audio-capture') {
+          setVoiceNotice(
+            isHindi
+              ? 'माइक्रोफ़ोन नहीं मिला या किसी अन्य ऐप द्वारा उपयोग में है।'
+              : 'No microphone detected or microphone is in use by another application.'
+          )
+          setVoiceState('IDLE')
+        } else if (event.error === 'network') {
+          setVoiceNotice(
+            isHindi
+              ? 'वॉयस नेटवर्क कनेक्शन त्रुटि। कृपया इंटरनेट जांचें या लिखकर उत्तर दें।'
+              : 'Speech recognition network error. Please check your connection or type your symptoms.'
+          )
+          setVoiceState('IDLE')
+        } else if (event.error === 'no-speech') {
+          setVoiceNotice(
+            isHindi
+              ? 'कोई आवाज नहीं सुनाई दी। कृपया माइक्रोफ़ोन के पास आकर बोलें।'
+              : 'No speech was detected. Please try speaking closer to the microphone.'
+          )
+          setVoiceState(inputMessage.trim() ? 'READY' : 'IDLE')
+        } else {
+          setVoiceNotice(
+            isHindi
+              ? `वॉयस इनपुट सूचना: ${event.error}। कृपया पुनः प्रयास करें या लिखें।`
+              : `Voice notice: ${event.error}. You can retry speaking or type your answer.`
+          )
+          setVoiceState('IDLE')
         }
       }
 
       recognition.onend = () => {
-        setIsListening(false)
-        if (composerBaseTextRef.current || inputMessage.trim()) {
-          setVoiceNotice(uiText.reviewVoiceNotice)
+        if (inputMessage.trim() || composerBaseTextRef.current) {
+          setVoiceState('READY')
+          setVoiceNotice(uiText.micReadyNotice || uiText.reviewVoiceNotice)
+        } else {
+          setVoiceState('IDLE')
         }
       }
 
@@ -323,7 +361,7 @@ export function PatientAssessment() {
       recognition.start()
     } catch (err) {
       console.error('Failed to initialize speech recognition:', err)
-      setIsListening(false)
+      setVoiceState('IDLE')
       setVoiceNotice(uiText.voiceUnsupported)
       setTimeout(() => setVoiceNotice(null), 6000)
     }
@@ -348,9 +386,9 @@ export function PatientAssessment() {
     }
   }
 
-  // Submit Patient Response
+  // Submit Patient Response with strict in-flight single request guard
   const handleSubmitMessage = async (textToSend) => {
-    if (isSubmittingRef.current || !caseId) return
+    if (isSubmittingRef.current || isLoading || !caseId) return
     const messageText = (textToSend || inputMessage).trim()
     if (!messageText) return
 
@@ -358,13 +396,13 @@ export function PatientAssessment() {
     setIsLoading(true)
     setHasError(false)
     setVoiceNotice(null)
+    setVoiceState('IDLE')
 
     // Stop recording if active
-    if (isListening && recognitionRef.current) {
+    if (recognitionRef.current) {
       try {
         recognitionRef.current.stop()
       } catch (e) {}
-      setIsListening(false)
     }
 
     setInputMessage('')
@@ -459,10 +497,12 @@ export function PatientAssessment() {
       disclaimerNote: 'मेडीकियोस्क एआई प्री-कंसल्टेशन इतिहास सहायक है। अंतिम निदान व उपचार डॉक्टर करेंगे।',
       prakritiTitle: 'आपकी आयुष जीवनशैली प्रोफ़ाइल',
       prakritiSub: 'क्लीनिकल परामर्श से पहले आपके उत्तरों पर आधारित प्रारंभिक विश्लेषण',
-      micListening: 'सुन रहा हूँ... बोलिए',
+      micListening: 'सुन रहे हैं... कृपया स्पष्ट बोलें',
+      micTranscribing: 'आवाज पहचानी जा रही है...',
       micIdle: 'बोलकर उत्तर दें',
       stopListening: 'रोकें',
       reviewVoiceNotice: 'Review your message before sending',
+      micReadyNotice: 'आवाज रिकॉर्ड हो गई है। भेजने से पहले संदेश जांच लें या बदलें।',
       voiceUnsupported: "Voice input isn't supported in this browser. You can type instead.",
       readAloud: 'उत्तर सुनें',
       loadingInitial: 'Preparing your health intake...',
@@ -497,10 +537,12 @@ export function PatientAssessment() {
       disclaimerNote: 'MediKiosk AI pre-consultation intake assistant hai. Final diagnosis doctor consultation me hoga.',
       prakritiTitle: 'Aapki AYUSH Profile',
       prakritiSub: 'Doctor consultation se pehle aapki routine par aadharit preliminary indicator',
-      micListening: 'Listening...',
+      micListening: 'Listening... Please speak clearly',
+      micTranscribing: 'Transcribing speech...',
       micIdle: 'Tap to speak',
       stopListening: 'Stop',
       reviewVoiceNotice: 'Review your message before sending',
+      micReadyNotice: 'Voice captured! Review or edit your message before sending.',
       voiceUnsupported: "Voice input isn't supported in this browser. You can type instead.",
       readAloud: 'Listen',
       loadingInitial: 'Preparing your health intake...',
@@ -535,10 +577,12 @@ export function PatientAssessment() {
       disclaimerNote: 'MediKiosk AI is an intake assistant only. Final clinical diagnosis is performed by your consulting physician.',
       prakritiTitle: 'Your Preliminary AYUSH Profile',
       prakritiSub: 'Structured intake indicator prepared for your consulting physician',
-      micListening: 'Listening...',
+      micListening: 'Listening... Please speak clearly',
+      micTranscribing: 'Transcribing speech...',
       micIdle: 'Tap to speak',
       stopListening: 'Stop',
       reviewVoiceNotice: 'Review your message before sending',
+      micReadyNotice: 'Voice input captured! Review or edit your message before sending.',
       voiceUnsupported: "Voice input isn't supported in this browser. You can type instead.",
       readAloud: 'Read aloud',
       loadingInitial: 'Preparing your health intake...',
@@ -880,7 +924,7 @@ export function PatientAssessment() {
                     <button
                       key={idx}
                       type="button"
-                      disabled={isLoading}
+                      disabled={isLoading || isSubmittingRef.current}
                       onClick={() => {
                         if (!isLoading && !isSubmittingRef.current) {
                           handleSubmitMessage(opt)
@@ -896,7 +940,7 @@ export function PatientAssessment() {
             )}
 
             {/* Active Voice Listening Banner */}
-            {isListening && (
+            {voiceState === 'LISTENING' && (
               <div className="p-2.5 rounded-md bg-destructive/10 border border-destructive/30 flex items-center justify-between text-xs text-destructive animate-pulse">
                 <div className="flex items-center gap-2">
                   <Radio className="h-4 w-4 animate-spin" />
@@ -913,21 +957,42 @@ export function PatientAssessment() {
               </div>
             )}
 
-            {/* Post-Voice Review Notice / Notification */}
+            {/* Active Voice Transcribing Banner */}
+            {voiceState === 'TRANSCRIBING' && (
+              <div className="p-2.5 rounded-md bg-primary/10 border border-primary/30 flex items-center justify-between text-xs text-primary animate-pulse">
+                <div className="flex items-center gap-2">
+                  <Sparkles className="h-4 w-4 animate-spin" />
+                  <span className="font-semibold">{uiText.micTranscribing}</span>
+                </div>
+                <Button
+                  size="sm"
+                  variant="outline"
+                  onClick={toggleVoiceRecording}
+                  className="h-7 text-xs px-2.5"
+                >
+                  {uiText.stopListening}
+                </Button>
+              </div>
+            )}
+
+            {/* Post-Voice Review Notice / Ready State Notification */}
             {voiceNotice && !isListening && (
-              <div className="p-2.5 rounded-md bg-secondary/15 border border-secondary/30 text-secondary-foreground text-xs flex items-center justify-between">
-                <span>{voiceNotice}</span>
+              <div className="p-2.5 rounded-md bg-secondary/15 border border-secondary/30 text-secondary-foreground text-xs flex items-center justify-between animate-in fade-in-50">
+                <div className="flex items-center gap-2">
+                  <CheckCircle2 className="h-4 w-4 text-secondary shrink-0" />
+                  <span>{voiceNotice}</span>
+                </div>
                 <button
                   type="button"
                   onClick={() => setVoiceNotice(null)}
-                  className="text-xs underline hover:no-underline ml-2"
+                  className="text-xs underline hover:no-underline ml-2 cursor-pointer shrink-0"
                 >
                   Dismiss
                 </button>
               </div>
             )}
 
-            {/* Message Composer Form */}
+            {/* Message Composer Form: Strictly 1 click = 1 request, never auto-sends voice */}
             <form
               onSubmit={(e) => {
                 e.preventDefault()
@@ -943,7 +1008,7 @@ export function PatientAssessment() {
                 variant={isListening ? 'destructive' : 'outline'}
                 size="lg"
                 onClick={toggleVoiceRecording}
-                disabled={isLoading}
+                disabled={isLoading || isSubmittingRef.current}
                 title={!speechSupported ? uiText.voiceUnsupported : isListening ? uiText.stopListening : uiText.micIdle}
                 className={`h-11 sm:h-12 w-11 sm:w-12 px-0 shrink-0 transition-all cursor-pointer ${
                   isListening
@@ -964,20 +1029,20 @@ export function PatientAssessment() {
                 value={inputMessage}
                 onChange={(e) => {
                   setInputMessage(e.target.value)
-                  if (voiceNotice && voiceNotice.includes('Review')) setVoiceNotice(null)
+                  if (voiceNotice && (voiceNotice.includes('Review') || voiceNotice.includes('संदेश'))) setVoiceNotice(null)
                 }}
-                placeholder={isListening ? uiText.micListening : uiText.placeholder}
-                disabled={isLoading}
+                placeholder={voiceState === 'LISTENING' ? uiText.micListening : voiceState === 'TRANSCRIBING' ? uiText.micTranscribing : uiText.placeholder}
+                disabled={isLoading || isSubmittingRef.current}
                 className={`flex-1 h-11 sm:h-12 px-3.5 sm:px-4 rounded-md border text-foreground text-sm focus:outline-hidden focus:ring-2 focus:ring-primary/40 disabled:opacity-60 placeholder:text-muted-foreground/60 transition-colors ${
                   isListening ? 'border-destructive/60 bg-destructive/5' : 'border-border bg-background'
                 }`}
               />
 
-              {/* Send Button */}
+              {/* Send Button: Disabled during in-flight submission */}
               <Button
                 type="submit"
                 size="lg"
-                disabled={!inputMessage.trim() || isLoading}
+                disabled={!inputMessage.trim() || isLoading || isSubmittingRef.current}
                 className="gap-2 px-4 sm:px-5 h-11 sm:h-12 shrink-0 font-medium"
               >
                 <span>{uiText.sendBtn}</span>

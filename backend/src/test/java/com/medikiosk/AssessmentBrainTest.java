@@ -252,21 +252,22 @@ public class AssessmentBrainTest {
         String summary = savedCase.getAiSummary();
         assertNotNull(summary);
 
-        // Verify all key sections of the 14-section format
-        assertTrue(summary.contains("1. CHIEF COMPLAINT:"));
-        assertTrue(summary.contains("2. HISTORY OF PRESENT ILLNESS (HPI):"));
-        assertTrue(summary.contains("3. ASSOCIATED SYMPTOMS:"));
-        assertTrue(summary.contains("4. RELEVANT MEDICAL HISTORY:"));
-        assertTrue(summary.contains("5. SURGICAL HISTORY:"));
-        assertTrue(summary.contains("6. CURRENT MEDICINES:"));
-        assertTrue(summary.contains("7. ALLERGIES:"));
-        assertTrue(summary.contains("8. FAMILY HISTORY:"));
-        assertTrue(summary.contains("9. PERSONAL / LIFESTYLE HISTORY:"));
-        assertTrue(summary.contains("10. AYUSH PROFILE:"));
-        assertTrue(summary.contains("11. PREVIOUS DOCUMENTS / INVESTIGATIONS:"));
-        assertTrue(summary.contains("12. RED FLAGS:"));
-        assertTrue(summary.contains("13. MISSING / NOT REPORTED INFORMATION:"));
-        assertTrue(summary.contains("14. CONCISE PRE-CONSULTATION SUMMARY:"));
+        // Verify all key sections of the structured format
+        assertTrue(summary.contains("PATIENT OVERVIEW:"));
+        assertTrue(summary.contains("CHIEF COMPLAINT:"));
+        assertTrue(summary.contains("HISTORY OF PRESENT ILLNESS (HPI):"));
+        assertTrue(summary.contains("ASSOCIATED SYMPTOMS:"));
+        assertTrue(summary.contains("MEDICAL HISTORY:"));
+        assertTrue(summary.contains("SURGICAL HISTORY:"));
+        assertTrue(summary.contains("CURRENT MEDICATIONS:") || summary.contains("CURRENT MEDICINES:"));
+        assertTrue(summary.contains("ALLERGIES:"));
+        assertTrue(summary.contains("FAMILY HISTORY:"));
+        assertTrue(summary.contains("PERSONAL / LIFESTYLE HISTORY:"));
+        assertTrue(summary.contains("AYUSH PROFILE:"));
+        assertTrue(summary.contains("PREVIOUS REPORTS / INVESTIGATIONS:") || summary.contains("INVESTIGATIONS:"));
+        assertTrue(summary.contains("RED FLAGS:"));
+        assertTrue(summary.contains("MISSING / NOT REPORTED"));
+        assertTrue(summary.contains("CONCISE PRE-CONSULTATION SUMMARY:"));
 
         // Verify that unasked/missing sections are explicitly marked "Not reported"
         assertTrue(summary.contains("Surgical History:\nNot reported") || summary.contains("Surgical History: Not reported"));
@@ -545,5 +546,364 @@ public class AssessmentBrainTest {
         assertNotNull(enRes);
         assertEquals("Hello. What health concern brings you in today?", enRes.getMessage());
     }
+
+    @Test
+    public void testScenario3_HinglishStomachBurningPostprandial() {
+        when(geminiService.generateContent(anyString())).thenThrow(new RuntimeException("Simulated offline"));
+
+        AssessmentStartRequest startReq = new AssessmentStartRequest(testPatientId, "hinglish");
+        AssessmentResponse startRes = assessmentService.startOrResumeAssessment(startReq);
+        Long caseId = startRes.getCaseId();
+
+        AssessmentResponse res = assessmentService.processMessage(new AssessmentMessageRequest(
+                caseId, testPatientId, "hinglish",
+                "pet me jalan ho rahi hai khana khane ke baad se"
+        ));
+
+        assertNotNull(res);
+        Case savedCase = caseRepository.findById(caseId).orElseThrow();
+        assertTrue(savedCase.getClinicalState().contains("Stomach burning") || savedCase.getClinicalState().contains("Pet mein jalan") || savedCase.getHpi().contains("burning"));
+        assertTrue(savedCase.getClinicalState().contains("Khana") || savedCase.getClinicalState().contains("Postprandial") || savedCase.getClinicalState().contains("meals"));
+    }
+
+    @Test
+    public void testScenario7_RedFlagSafetyAdvisoryImmediate() {
+        when(geminiService.generateContent(anyString())).thenThrow(new RuntimeException("Simulated offline"));
+
+        AssessmentStartRequest startReq = new AssessmentStartRequest(testPatientId, "hinglish");
+        AssessmentResponse startRes = assessmentService.startOrResumeAssessment(startReq);
+        Long caseId = startRes.getCaseId();
+
+        AssessmentResponse res = assessmentService.processMessage(new AssessmentMessageRequest(
+                caseId, testPatientId, "hinglish",
+                "chest pain ke saath saans lene mein bahut dikkat ho rahi hai"
+        ));
+
+        assertNotNull(res);
+        assertTrue(res.getRedFlagDetected(), "Red flag must be detected immediately");
+        assertTrue(res.getMessage().contains("⚠️"), "Message must contain alert icon");
+        assertTrue(res.getMessage().contains("turant") || res.getMessage().contains("hospital") || res.getMessage().contains("Emergency"),
+                "Advisory must urge immediate medical attention");
+    }
+
+    @Test
+    public void testScenario8_VolunteeredAyushCaptureAndAntiRepetition() {
+        when(geminiService.generateContent(anyString())).thenThrow(new RuntimeException("Simulated offline"));
+
+        AssessmentStartRequest startReq = new AssessmentStartRequest(testPatientId, "hinglish");
+        AssessmentResponse startRes = assessmentService.startOrResumeAssessment(startReq);
+        Long caseId = startRes.getCaseId();
+
+        // Turn 1: Patient volunteers Agni and Nidra naturally along with symptom
+        AssessmentResponse res1 = assessmentService.processMessage(new AssessmentMessageRequest(
+                caseId, testPatientId, "hinglish",
+                "pet kharab rehta hai, bhookh bilkul nahi lagti aur neend bhi theek se nahi aati"
+        ));
+
+        Case savedCase = caseRepository.findById(caseId).orElseThrow();
+        ClinicalInterviewState state = null;
+        try {
+            state = objectMapper.readValue(savedCase.getClinicalState(), ClinicalInterviewState.class);
+        } catch (Exception e) {
+            fail("Failed to parse clinical state");
+        }
+
+        assertNotNull(state);
+        assertTrue(state.hasAgniKnown(), "Agni must be captured as known");
+        assertTrue(state.hasNidraKnown(), "Nidra must be captured as known");
+
+        // The AI must NOT ask about appetite or sleep
+        String nextMsg = res1.getMessage().toLowerCase();
+        assertFalse(nextMsg.contains("bhookh"), "AI must NOT ask about appetite again");
+        assertFalse(nextMsg.contains("appetite"), "AI must NOT ask about appetite again");
+        assertFalse(nextMsg.contains("neend"), "AI must NOT ask about sleep again");
+        assertFalse(nextMsg.contains("sleep"), "AI must NOT ask about sleep again");
+    }
+
+    @Test
+    public void testScenario9_LongNaturalParagraphParsing() {
+        when(geminiService.generateContent(anyString())).thenThrow(new RuntimeException("Simulated offline"));
+
+        AssessmentStartRequest startReq = new AssessmentStartRequest(testPatientId, "hinglish");
+        AssessmentResponse startRes = assessmentService.startOrResumeAssessment(startReq);
+        Long caseId = startRes.getCaseId();
+
+        AssessmentResponse res = assessmentService.processMessage(new AssessmentMessageRequest(
+                caseId, testPatientId, "hinglish",
+                "Mujhe 3 din se tez bukhar hai aur sath me sukhi khansi bhi hai. Maine subah paracetamol li thi par aaram nahi hua. Koi allergy nahi hai aur main desk job karta hoon."
+        ));
+
+        assertNotNull(res);
+        Case savedCase = caseRepository.findById(caseId).orElseThrow();
+        ClinicalInterviewState state = null;
+        try {
+            state = objectMapper.readValue(savedCase.getClinicalState(), ClinicalInterviewState.class);
+        } catch (Exception e) {
+            fail("Failed to parse clinical state");
+        }
+
+        assertNotNull(state);
+        assertTrue(state.getSymptoms().size() >= 2, "Must extract both fever and cough");
+        assertTrue(state.getCurrentMedicines().contains("Paracetamol"));
+        assertTrue(state.getAllergies().toLowerCase().contains("no known"));
+        assertTrue(state.getPersonalLifestyle().toLowerCase().contains("desk job") || state.getPersonalLifestyle().toLowerCase().contains("sedentary"));
+    }
+
+    @Test
+    public void testScenario10_StrictLanguageLockAgainstLoanwordsAndDevanagariShift() {
+        when(geminiService.generateContent(anyString())).thenThrow(new RuntimeException("Simulated offline"));
+
+        // Case 1: Hinglish with English loan words like fever, paracetamol, moderate
+        AssessmentResponse startHinglish = assessmentService.startOrResumeAssessment(
+                new AssessmentStartRequest(testPatientId, "hinglish")
+        );
+        AssessmentResponse resHinglish = assessmentService.processMessage(new AssessmentMessageRequest(
+                startHinglish.getCaseId(), testPatientId, "hinglish",
+                "Mujhe fever hai and maine paracetamol li thi, pain moderate hai"
+        ));
+        // Language must STAY Hinglish, NOT flip to English
+        assertEquals("hinglish", resHinglish.getLanguage());
+
+        // Case 2: Hindi with Devanagari shift
+        AssessmentResponse resShift = assessmentService.processMessage(new AssessmentMessageRequest(
+                startHinglish.getCaseId(), testPatientId, "hinglish",
+                "कृपया मुझे बताएं कि आगे क्या करना चाहिए"
+        ));
+        // Must adapt to Hindi because of genuine Devanagari text
+        assertEquals("hi", resShift.getLanguage());
+    }
+
+    @Test
+    public void testCandidateQuestionGate_RejectsRepeatedDurationQuestion() {
+        // Patient starts with "2 hafte se knee pain hai" -> duration is known ("2 hafte")
+        // Gemini mock mistakenly proposes "Ye dard kab se hai?" (DURATION concept)
+        String geminiTurn1 = """
+                {
+                  "acknowledgement": "Ghutne ke dard ke baare mein sunkar dukh hua.",
+                  "nextQuestion": "Ye dard kab se hai?",
+                  "quickOptions": ["1-2 din", "1 week", "2 hafte ya zyada"],
+                  "extractedFacts": {
+                    "chiefComplaint": "Knee pain",
+                    "duration": "2 hafte",
+                    "location": "Knee"
+                  },
+                  "isAssessmentComplete": false
+                }
+                """;
+        when(geminiService.generateContent(anyString())).thenReturn(geminiTurn1);
+
+        AssessmentStartRequest startReq = new AssessmentStartRequest(testPatientId, "hinglish");
+        AssessmentResponse startRes = assessmentService.startOrResumeAssessment(startReq);
+        Long caseId = startRes.getCaseId();
+
+        AssessmentResponse res = assessmentService.processMessage(new AssessmentMessageRequest(
+                caseId, testPatientId, "hinglish",
+                "Mujhe 2 hafte se knee pain hai"
+        ));
+
+        assertNotNull(res);
+        assertFalse(res.isCompleted());
+        // Crucial check: Candidate "Ye dard kab se hai?" MUST be rejected because duration is already known!
+        String aiMessage = res.getMessage().toLowerCase();
+        assertFalse(aiMessage.contains("kab se"), "AI must NOT ask 'Ye dard kab se hai?' since duration is already known");
+        assertFalse(aiMessage.contains("kitne din"), "AI must NOT ask duration again");
+        assertFalse(aiMessage.contains("how long"), "AI must NOT ask duration again");
+
+        // It should have substituted the next missing dimension (e.g., severity or trigger)
+        assertTrue(aiMessage.contains("scale") || aiMessage.contains("tez") || aiMessage.contains("shuru") || aiMessage.contains("gardhan") || aiMessage.contains("chalne"),
+                "AI should ask for an unanswered dimension like severity or activity trigger");
+
+        Case savedCase = caseRepository.findById(caseId).orElseThrow();
+        assertTrue(savedCase.getHpi().contains("Duration: 2 hafte"));
+    }
+
+    @Test
+    public void testCandidateQuestionGate_RejectsRepeatedSeverityQuestion() {
+        // Turn 1: Patient gives duration and severity
+        String geminiTurn1 = """
+                {
+                  "acknowledgement": "Samajh gaya.",
+                  "nextQuestion": "Dard kitna tez hai? 1 se 10 ke scale par batayein.",
+                  "quickOptions": ["Mild (2-3)", "Moderate (5-6)", "Severe (7-8)"],
+                  "extractedFacts": {
+                    "chiefComplaint": "Knee pain",
+                    "duration": "2 weeks",
+                    "severity": "7/10"
+                  },
+                  "isAssessmentComplete": false
+                }
+                """;
+        // Turn 2: Gemini tries to ask severity AGAIN
+        String geminiTurn2 = """
+                {
+                  "acknowledgement": "Theek hai.",
+                  "nextQuestion": "Dard ki teevrata (severity) kitni hai?",
+                  "quickOptions": ["Halka", "Tez"],
+                  "extractedFacts": {},
+                  "isAssessmentComplete": false
+                }
+                """;
+        when(geminiService.generateContent(anyString()))
+                .thenReturn(geminiTurn1)
+                .thenReturn(geminiTurn2);
+
+        AssessmentStartRequest startReq = new AssessmentStartRequest(testPatientId, "hinglish");
+        AssessmentResponse startRes = assessmentService.startOrResumeAssessment(startReq);
+        Long caseId = startRes.getCaseId();
+
+        // Turn 1
+        AssessmentResponse res1 = assessmentService.processMessage(new AssessmentMessageRequest(
+                caseId, testPatientId, "hinglish",
+                "Mujhe 2 weeks se knee pain hai aur dard lagbhag 7/10 hai"
+        ));
+
+        // In turn 1, severity was provided, so Gemini's proposed severity question must already be rejected
+        assertFalse(res1.getMessage().toLowerCase().contains("scale"), "Turn 1 must not ask severity since patient already gave 7/10");
+
+        // Turn 2
+        AssessmentResponse res2 = assessmentService.processMessage(new AssessmentMessageRequest(
+                caseId, testPatientId, "hinglish",
+                "Chalne mein zyada hota hai"
+        ));
+
+        // Gemini proposed "Dard ki teevrata (severity) kitni hai?" which MUST be rejected
+        assertFalse(res2.getMessage().toLowerCase().contains("teevrata"), "Turn 2 must reject duplicate severity question");
+        assertFalse(res2.getMessage().toLowerCase().contains("severity"), "Turn 2 must reject duplicate severity question");
+    }
+
+    @Test
+    public void testMultiSymptomIndependentDurationsAndAntiRepetition() {
+        when(geminiService.generateContent(anyString())).thenThrow(new RuntimeException("Simulated offline fallback"));
+
+        AssessmentStartRequest startReq = new AssessmentStartRequest(testPatientId, "hinglish");
+        AssessmentResponse startRes = assessmentService.startOrResumeAssessment(startReq);
+        Long caseId = startRes.getCaseId();
+
+        // Patient describes 2 distinct symptoms with different durations
+        AssessmentResponse res = assessmentService.processMessage(new AssessmentMessageRequest(
+                caseId, testPatientId, "hinglish",
+                "2 din se bukhar hai aur 5 din se khansi hai"
+        ));
+
+        assertNotNull(res);
+        Case savedCase = caseRepository.findById(caseId).orElseThrow();
+        ClinicalInterviewState state = null;
+        try {
+            state = objectMapper.readValue(savedCase.getClinicalState(), ClinicalInterviewState.class);
+        } catch (Exception e) {
+            fail("Failed to parse clinical state");
+        }
+
+        assertNotNull(state);
+        assertEquals(2, state.getSymptoms().size(), "Both fever and cough must be recorded as separate symptoms");
+
+        // State has durations known
+        assertTrue(state.hasDurationKnown(), "Duration must be marked known");
+
+        // Next question should NOT ask about duration
+        String aiMessage = res.getMessage().toLowerCase();
+        assertFalse(aiMessage.contains("kab se"), "AI must NOT ask duration when patient specified 2 din and 5 din");
+        assertFalse(aiMessage.contains("kitne din"), "AI must NOT ask duration");
+    }
+
+    @Test
+    public void testAyushAgniQuickReplyNormalBalancedNeverLoops() {
+        when(geminiService.generateContent(anyString())).thenThrow(new RuntimeException("Simulated offline"));
+
+        Patient p = new Patient("Amit Sharma", 35, "Male", "9876543210", "en");
+        Patient saved = patientRepository.save(p);
+
+        AssessmentStartRequest startReq = new AssessmentStartRequest(saved.getId(), "en");
+        AssessmentResponse startRes = assessmentService.startOrResumeAssessment(startReq);
+        Long caseId = startRes.getCaseId();
+
+        // Turn 1: Primary complaint & duration
+        AssessmentResponse t1 = assessmentService.processMessage(new AssessmentMessageRequest(
+                caseId, saved.getId(), "en", "I have had stomach pain for 4 days"
+        ));
+        assertFalse(t1.isCompleted());
+
+        // Turn 2: Location
+        assessmentService.processMessage(new AssessmentMessageRequest(
+                caseId, saved.getId(), "en", "Upper abdomen"
+        ));
+
+        // Turn 3: Severity
+        assessmentService.processMessage(new AssessmentMessageRequest(
+                caseId, saved.getId(), "en", "Moderate (5-6)"
+        ));
+
+        // Turn 4: Trigger
+        assessmentService.processMessage(new AssessmentMessageRequest(
+                caseId, saved.getId(), "en", "Worse after eating"
+        ));
+
+        // Turn 5: Medications / History
+        AssessmentResponse t5 = assessmentService.processMessage(new AssessmentMessageRequest(
+                caseId, saved.getId(), "en", "No medications"
+        ));
+
+        // Turn 6: AI asks digestion/appetite (Agni)
+        assertTrue(t5.getMessage().toLowerCase().contains("appetite") || t5.getMessage().toLowerCase().contains("digestion"),
+                "AI should ask about appetite/digestion: " + t5.getMessage());
+
+        // Patient replies with the EXACT live reproduction string: "Normal balanced"
+        AssessmentResponse t6 = assessmentService.processMessage(new AssessmentMessageRequest(
+                caseId, saved.getId(), "en", "Normal balanced"
+        ));
+
+        // CRUCIAL ASSERTION: The AI must NEVER repeat the digestion/appetite question!
+        String t6Question = t6.getMessage().toLowerCase();
+        assertFalse(t6Question.contains("how is your daily appetite and digestion"),
+                "AI must NOT repeat appetite/digestion question after patient answered 'Normal balanced'");
+        assertFalse(t6Question.contains("assess your digestion"),
+                "AI must NOT repeat appetite/digestion question after patient answered 'Normal balanced'");
+
+        // Verify that Agni is marked answered and recorded in clinical state
+        Case c = caseRepository.findById(caseId).orElseThrow();
+        try {
+            ClinicalInterviewState state = objectMapper.readValue(c.getClinicalState(), ClinicalInterviewState.class);
+            assertTrue(state.hasAgniKnown(), "Agni must be marked known after 'Normal balanced'");
+            assertNotNull(state.getAyushAgni(), "Agni value must not be null");
+            assertEquals("Normal balanced", state.getAyushAgni());
+        } catch (Exception e) {
+            fail("Failed to parse state: " + e.getMessage());
+        }
+    }
+
+    @Test
+    public void testCleanCompletionWithUnaskedAyushMarkedNotReported() {
+        when(geminiService.generateContent(anyString())).thenThrow(new RuntimeException("Simulated offline"));
+
+        Patient p = new Patient("Sunita Rao", 42, "Female", "9812345678", "en");
+        Patient saved = patientRepository.save(p);
+
+        AssessmentStartRequest startReq = new AssessmentStartRequest(saved.getId(), "en");
+        AssessmentResponse startRes = assessmentService.startOrResumeAssessment(startReq);
+        Long caseId = startRes.getCaseId();
+
+        // 1. Complaint & timeline
+        assessmentService.processMessage(new AssessmentMessageRequest(caseId, saved.getId(), "en", "Severe headache for 3 days"));
+        // 2. Location
+        assessmentService.processMessage(new AssessmentMessageRequest(caseId, saved.getId(), "en", "Forehead"));
+        // 3. Severity
+        assessmentService.processMessage(new AssessmentMessageRequest(caseId, saved.getId(), "en", "7-8 / Severe"));
+        // 4. Triggers
+        assessmentService.processMessage(new AssessmentMessageRequest(caseId, saved.getId(), "en", "Bright light or sound"));
+        // 5. History / Meds
+        assessmentService.processMessage(new AssessmentMessageRequest(caseId, saved.getId(), "en", "Took paracetamol, no past history"));
+        // 6. Agni question answered
+        assessmentService.processMessage(new AssessmentMessageRequest(caseId, saved.getId(), "en", "Normal balanced"));
+        // 7. Sleep question answered
+        AssessmentResponse t7 = assessmentService.processMessage(new AssessmentMessageRequest(caseId, saved.getId(), "en", "Sound & restful"));
+
+        // Case should be completed at around 6-7 turns without endless loop!
+        assertTrue(t7.isCompleted(), "Case should complete with core history and AYUSH explored");
+        Case c = caseRepository.findById(caseId).orElseThrow();
+        assertEquals("READY_FOR_REVIEW", c.getStatus());
+        assertNotNull(c.getAiSummary());
+        assertTrue(c.getAiSummary().contains("PRE-CONSULTATION SUMMARY"));
+    }
 }
+
 

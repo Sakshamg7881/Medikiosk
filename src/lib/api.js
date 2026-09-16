@@ -37,6 +37,40 @@ export async function getPatient(patientId) {
   }
 }
 
+export async function getPatientByPhone(phone) {
+  const cleanPhone = String(phone || '').replace(/\D/g, '')
+  if (!cleanPhone) return null
+
+  try {
+    const response = await fetch(`${API_BASE_URL}/patients/by-phone/${cleanPhone}`)
+    if (response.ok) {
+      return await response.json()
+    }
+  } catch (error) {
+    console.warn('Backend lookup failed for patient by phone, checking local store:', error)
+  }
+
+  // Check local fallback storage
+  try {
+    const localPatients = JSON.parse(localStorage.getItem('medikiosk_registered_patients') || '[]')
+    const found = localPatients.find(p => String(p.phone || '').replace(/\D/g, '') === cleanPhone)
+    if (found) return found
+  } catch (e) {
+    console.warn('Error reading local patients:', e)
+  }
+
+  // Check built-in demo patients for testing & demo showcase
+  const demoPatients = [
+    { id: 901, name: 'Ramesh Kumar', age: 45, gender: 'Male', phone: '9876543210', preferredLanguage: 'hi' },
+    { id: 902, name: 'Sunita Sharma', age: 38, gender: 'Female', phone: '9810012345', preferredLanguage: 'hi' },
+    { id: 903, name: 'Arvind Vaidya', age: 52, gender: 'Male', phone: '9820011223', preferredLanguage: 'en' },
+  ]
+  const demoFound = demoPatients.find(p => p.phone === cleanPhone)
+  if (demoFound) return demoFound
+
+  return null
+}
+
 export async function startAssessment({ patientId, language }) {
   try {
     const response = await fetch(`${API_BASE_URL}/assessment/start`, {

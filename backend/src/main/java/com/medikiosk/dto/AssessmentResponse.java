@@ -21,6 +21,7 @@ public class AssessmentResponse {
     private String statusMessage;
     private Map<String, Object> clinicalState;
     private Long patientId;
+    private String language;
 
     public AssessmentResponse() {}
 
@@ -170,5 +171,13 @@ public class AssessmentResponse {
 
     public void setPatientId(Long patientId) {
         this.patientId = patientId;
+    }
+
+    public String getLanguage() {
+        return language;
+    }
+
+    public void setLanguage(String language) {
+        this.language = language;
     }
 }

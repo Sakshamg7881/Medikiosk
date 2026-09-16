@@ -1,4 +1,4 @@
-﻿import React, { useState, useEffect } from 'react'
+import React, { useState, useEffect } from 'react'
 import { Link, useNavigate } from 'react-router-dom'
 import { Card, CardHeader, CardTitle, CardDescription, CardContent, CardFooter } from '@/components/ui/Card'
 import { Button } from '@/components/ui/Button'
@@ -414,7 +414,7 @@ export function PatientHome() {
                 onClick={() => setDirectionsModal(false)}
                 className="text-muted-foreground hover:text-foreground text-sm font-mono"
               >
-                âœ•
+                ✕
               </button>
             </div>
             <div className="space-y-2 text-xs text-muted-foreground leading-relaxed">

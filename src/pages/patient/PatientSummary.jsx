@@ -1,4 +1,4 @@
-﻿import React, { useState, useEffect } from 'react'
+import React, { useState, useEffect } from 'react'
 import { Link, useNavigate } from 'react-router-dom'
 import { Card, CardHeader, CardTitle, CardDescription, CardContent, CardFooter } from '@/components/ui/Card'
 import { Button } from '@/components/ui/Button'
@@ -22,6 +22,7 @@ import {
   Download,
 } from 'lucide-react'
 import { getPatientSession } from '@/lib/session'
+import { getClinicById } from '@/data/clinicsData'
 import { getCaseSummary } from '@/lib/api'
 import { DailyCareCard } from '@/components/patient/DailyCareCard'
 import { generateClinicalPdf } from '@/lib/pdfReportGenerator'
@@ -258,7 +259,7 @@ export function PatientSummary() {
                     Constitutional Tendency Indicator
                   </span>
                   <span className="text-[10px] font-mono text-muted-foreground">
-                    Preliminary wellness indicator â€” not a diagnosis
+                    Preliminary wellness indicator — not a diagnosis
                   </span>
                 </div>
 
@@ -417,7 +418,14 @@ export function PatientSummary() {
               variant="outline"
               size="md"
               onClick={() => {
-                if (summaryData) generateClinicalPdf(summaryData)
+                if (summaryData) {
+                  const selClinic = getClinicById(session.selectedClinicId) || getClinicById('c1')
+                  generateClinicalPdf({
+                    ...summaryData,
+                    selectedClinic: selClinic,
+                    clinicName: selClinic?.name,
+                  })
+                }
               }}
               className="w-full sm:w-auto gap-2 text-xs"
             >

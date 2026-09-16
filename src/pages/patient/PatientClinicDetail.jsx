@@ -1,4 +1,4 @@
-﻿import React, { useState } from 'react'
+import React, { useState } from 'react'
 import { useParams, Link } from 'react-router-dom'
 import { Card, CardHeader, CardTitle, CardDescription, CardContent, CardFooter } from '@/components/ui/Card'
 import { Button } from '@/components/ui/Button'
@@ -150,7 +150,7 @@ export function PatientClinicDetail() {
 
         <CardFooter className="p-4 border-t border-border flex flex-wrap items-center justify-between gap-2 bg-muted/10">
           <div className="font-mono text-xs text-muted-foreground">
-            Standard Consultation: <strong className="text-foreground text-sm font-semibold">â‚¹{clinic.consultationFee}</strong>
+            Standard Consultation: <strong className="text-foreground text-sm font-semibold">₹{clinic.consultationFee}</strong>
           </div>
 
           <div className="flex items-center gap-2">
@@ -220,7 +220,7 @@ export function PatientClinicDetail() {
                     <span>•</span>
                     <span>Languages: {doc.languages.join(', ')}</span>
                     <span>•</span>
-                    <span className="text-foreground font-semibold">Fee: â‚¹{doc.consultationFee}</span>
+                    <span className="text-foreground font-semibold">Fee: ₹{doc.consultationFee}</span>
                   </div>
 
                   <p className="text-xs text-muted-foreground pt-1 line-clamp-2">
@@ -259,7 +259,7 @@ export function PatientClinicDetail() {
                 onClick={() => setDirectionsModal(false)}
                 className="text-muted-foreground hover:text-foreground text-sm font-mono"
               >
-                âœ•
+                ✕
               </button>
             </div>
             <div className="space-y-2 text-xs text-muted-foreground leading-relaxed">

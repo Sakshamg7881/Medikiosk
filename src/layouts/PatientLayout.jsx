@@ -11,13 +11,21 @@ export function PatientLayout() {
 
   const navItems = [
     { label: 'Home', path: '/patient/home', icon: Home },
-    { label: 'Find Clinic', path: '/patient/clinics', icon: Building2 },
     { label: 'My Cases', path: '/patient/cases', icon: FileText },
-    { label: 'Documents', path: '/patient/documents', icon: FileSpreadsheet },
     { label: 'Appointments', path: '/patient/appointments', icon: Calendar },
   ]
 
-  const isNavVisible = !isLoginPage
+  // Hide top-level navigation on login and guided intake steps to maintain a focused 1-min demo flow
+  const isGuidedStep = [
+    '/patient/login',
+    '/patient/clinics',
+    '/patient/assessment',
+    '/patient/documents',
+    '/patient/summary',
+    '/patient/export',
+  ].some(p => location.pathname === p || location.pathname.startsWith(p + '/'))
+
+  const isNavVisible = !isLoginPage && !isGuidedStep
 
   return (
     <div className="min-h-screen flex flex-col bg-background text-foreground">

@@ -5,23 +5,35 @@ import { Button } from '@/components/ui/Button'
 import { Input } from '@/components/ui/Input'
 import { Badge } from '@/components/ui/Badge'
 import { Alert, AlertTitle, AlertDescription } from '@/components/ui/Alert'
-import { ArrowLeft, ArrowRight, Check, KeyRound, AlertCircle, Loader2 } from 'lucide-react'
-import { getPatientSession, setPatientData } from '@/lib/session'
-import { createPatient } from '@/lib/api'
+import {
+  ArrowLeft,
+  ArrowRight,
+  Check,
+  KeyRound,
+  AlertCircle,
+  Loader2,
+  UserPlus,
+  UserCheck,
+  Phone,
+  ShieldCheck,
+  Sparkles,
+  UserX
+} from 'lucide-react'
+import { getPatientSession, setPatientData, setConsentAccepted, setSelectedClinic } from '@/lib/session'
+import { createPatient, getPatientByPhone } from '@/lib/api'
 
 export function PatientLogin() {
   const navigate = useNavigate()
   const [session, setSession] = useState(getPatientSession())
+
+  // Step Mode: 'choice' | 'first_visit_form' | 'first_visit_otp' | 'returning_patient_phone' | 'returning_patient_otp' | 'profile_not_found'
+  const [mode, setMode] = useState('choice')
 
   // Form State
   const [name, setName] = useState('')
   const [age, setAge] = useState('')
   const [gender, setGender] = useState('Male')
   const [phone, setPhone] = useState('')
-
-  // Flow State: 'profile' or 'otp'
-  const [step, setStep] = useState('profile')
-  const [createdPatient, setCreatedPatient] = useState(null)
 
   // OTP State
   const [otp, setOtp] = useState('')
@@ -34,75 +46,160 @@ export function PatientLogin() {
   useEffect(() => {
     const currentSession = getPatientSession()
     setSession(currentSession)
-    if (currentSession.name) setName(currentSession.name)
-    if (currentSession.phone) setPhone(currentSession.phone)
+    // Clear any previously preselected clinic so fresh intake has no default clinic
+    setSelectedClinic(null)
   }, [])
 
   const lang = session.preferredLanguage || 'en'
 
-  // Handle Profile Form Submit
-  const handleProfileSubmit = async (e) => {
+  // 1. Submit First Visit Registration Form -> Advance to OTP
+  const handleFirstVisitFormSubmit = (e) => {
     e?.preventDefault()
     setErrorMessage('')
 
     if (!name.trim()) {
-      setErrorMessage('Please enter your full name')
+      setErrorMessage('Please enter your full name.')
       return
     }
 
-    if (!phone.trim() || phone.replace(/\D/g, '').length < 10) {
-      setErrorMessage('Please enter a valid 10-digit phone number')
+    const cleanPhone = phone.replace(/\D/g, '')
+    if (cleanPhone.length < 10) {
+      setErrorMessage('Please enter a valid 10-digit mobile number.')
+      return
+    }
+
+    setOtp('')
+    setOtpError('')
+    setMode('first_visit_otp')
+  }
+
+  // 2. Submit First Visit OTP -> Register Profile & Go to Clinic Selection
+  const handleFirstVisitOtpVerify = async (e) => {
+    e?.preventDefault()
+    setOtpError('')
+    setErrorMessage('')
+
+    const cleanOtp = otp.trim()
+    if (!/^\d{6}$/.test(cleanOtp)) {
+      setOtpError('Please enter a valid 6-digit verification code.')
       return
     }
 
     setLoading(true)
+    const cleanPhone = phone.replace(/\D/g, '')
+
     try {
       const patientPayload = {
         name: name.trim(),
         age: age ? parseInt(age, 10) : null,
-        gender,
-        phone: phone.trim(),
+        gender: gender || 'Male',
+        phone: cleanPhone,
         preferredLanguage: lang,
       }
 
-      const saved = await createPatient(patientPayload)
-      setCreatedPatient(saved)
-      setStep('otp')
+      let savedPatient
+      try {
+        savedPatient = await createPatient(patientPayload)
+      } catch (apiErr) {
+        console.warn('Backend createPatient error, falling back to local creation:', apiErr)
+        savedPatient = {
+          id: Date.now(),
+          ...patientPayload,
+          createdAt: new Date().toISOString(),
+        }
+      }
+
+      // Cache patient in registered patients list in localStorage
+      try {
+        const existingList = JSON.parse(localStorage.getItem('medikiosk_registered_patients') || '[]')
+        const filtered = existingList.filter(p => String(p.phone).replace(/\D/g, '') !== cleanPhone)
+        filtered.push(savedPatient)
+        localStorage.setItem('medikiosk_registered_patients', JSON.stringify(filtered))
+      } catch (storageErr) {
+        console.warn('Could not cache patient profile in localStorage:', storageErr)
+      }
+
+      // Store patient in session
+      setPatientData(savedPatient)
+      setConsentAccepted(true)
+
+      // Converge directly to CLINIC SELECTION
+      navigate('/patient/clinics')
     } catch (err) {
-      setErrorMessage(err.message || 'Unable to register patient profile. Please try again.')
+      setErrorMessage('Unable to save patient profile. Please try again.')
     } finally {
       setLoading(false)
     }
   }
 
-  // Handle Mock OTP Verification
-  const handleOtpVerify = (e) => {
+  // 3. Submit Returning Patient Mobile Number -> Advance to OTP
+  const handleReturningPatientPhoneSubmit = (e) => {
     e?.preventDefault()
-    setOtpError('')
+    setErrorMessage('')
 
-    const cleanOtp = otp.trim()
-    // Accept any valid 6-digit numeric OTP
-    if (!/^\d{6}$/.test(cleanOtp)) {
-      setOtpError('Please enter a valid 6-digit code')
+    const cleanPhone = phone.replace(/\D/g, '')
+    if (cleanPhone.length < 10) {
+      setErrorMessage('Please enter your 10-digit registered mobile number.')
       return
     }
 
-    if (createdPatient) {
-      // Store patient in local session
-      setPatientData(createdPatient)
+    setOtp('')
+    setOtpError('')
+    setMode('returning_patient_otp')
+  }
+
+  // 4. Submit Returning Patient OTP -> Find Profile & Go to Clinic Selection
+  const handleReturningPatientOtpVerify = async (e) => {
+    e?.preventDefault()
+    setOtpError('')
+    setErrorMessage('')
+
+    const cleanOtp = otp.trim()
+    if (!/^\d{6}$/.test(cleanOtp)) {
+      setOtpError('Please enter a valid 6-digit verification code.')
+      return
     }
 
-    // Continue to consent
-    navigate('/patient/consent')
+    setLoading(true)
+    const cleanPhone = phone.replace(/\D/g, '')
+
+    try {
+      const existing = await getPatientByPhone(cleanPhone)
+
+      if (existing && existing.name) {
+        // Found existing profile! Do NOT create a duplicate.
+        setPatientData(existing)
+        setConsentAccepted(true)
+
+        // Continue directly to CLINIC SELECTION
+        navigate('/patient/clinics')
+      } else {
+        // No existing profile found with this number
+        setMode('profile_not_found')
+      }
+    } catch (err) {
+      console.warn('Error during returning patient lookup:', err)
+      setMode('profile_not_found')
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  // Helper to switch to First Visit with phone prefilled
+  const handleSwitchToFirstVisit = () => {
+    setErrorMessage('')
+    setOtp('')
+    setOtpError('')
+    setMode('first_visit_form')
   }
 
   return (
-    <div className="max-w-xl mx-auto w-full space-y-6">
+    <div className="max-w-xl mx-auto w-full space-y-6 pb-12">
       {/* Top Header / Back Navigation */}
       <div className="flex items-center justify-between">
-        {step === 'profile' ? (
+        {mode === 'choice' ? (
           <Link to="/">
-            <Button variant="ghost" size="sm" className="gap-1.5 text-muted-foreground">
+            <Button variant="ghost" size="sm" className="gap-1.5 text-muted-foreground hover:text-foreground">
               <ArrowLeft className="h-4 w-4" />
               <span>Back to Home</span>
             </Button>
@@ -111,31 +208,24 @@ export function PatientLogin() {
           <Button
             variant="ghost"
             size="sm"
-            onClick={() => setStep('profile')}
-            className="gap-1.5 text-muted-foreground"
+            onClick={() => {
+              setErrorMessage('')
+              setOtpError('')
+              if (mode === 'first_visit_otp') setMode('first_visit_form')
+              else if (mode === 'returning_patient_otp') setMode('returning_patient_phone')
+              else if (mode === 'profile_not_found') setMode('returning_patient_phone')
+              else setMode('choice')
+            }}
+            className="gap-1.5 text-muted-foreground hover:text-foreground"
           >
             <ArrowLeft className="h-4 w-4" />
-            <span>Edit Profile</span>
+            <span>Back</span>
           </Button>
         )}
 
-        <Badge variant="outline">
-          Step 2 of 7 • {step === 'profile' ? 'Patient Profile' : 'Verification'}
+        <Badge variant="outline" className="font-mono text-xs">
+          Patient Intake • MediKiosk
         </Badge>
-      </div>
-
-      {/* Screen Title */}
-      <div className="text-center space-y-1">
-        <h1 className="font-serif text-3xl font-bold tracking-tight text-foreground">
-          {step === 'profile'
-            ? (lang === 'hi' ? 'रोगी विवरण दर्ज करें' : 'Patient Registration')
-            : (lang === 'hi' ? 'सुरक्षा सत्यापन (OTP)' : 'Security Verification')}
-        </h1>
-        <p className="text-muted-foreground text-sm">
-          {step === 'profile'
-            ? (lang === 'hi' ? 'क्लिनिक परामर्श के लिए अपनी जानकारी भरें' : 'Enter your details to generate your clinic record')
-            : (lang === 'hi' ? `मोबाइल नंबर ${phone} पर भेजा गया कोड दर्ज करें` : `Enter the verification code for ${phone}`)}
-        </p>
       </div>
 
       {/* Error Alert */}
@@ -147,22 +237,168 @@ export function PatientLogin() {
         </Alert>
       )}
 
-      {/* Profile Form Step */}
-      {step === 'profile' && (
-        <Card>
-          <form onSubmit={handleProfileSubmit}>
-            <CardContent className="space-y-4 pt-6">
-              {/* Name */}
+      {/* ========================================================================= */}
+      {/* 1. CHOICE SCREEN: FIRST VISIT vs RETURNING PATIENT */}
+      {/* ========================================================================= */}
+      {mode === 'choice' && (
+        <div className="space-y-6 animate-in fade-in-50 duration-200">
+          <div className="text-center space-y-2">
+            <h1 className="font-serif text-3xl sm:text-4xl font-bold tracking-tight text-foreground">
+              Welcome to MediKiosk
+            </h1>
+            <p className="text-muted-foreground text-sm sm:text-base">
+              How would you like to continue?
+            </p>
+          </div>
+
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 pt-2">
+            {/* Option Card 1: FIRST VISIT */}
+            <Card
+              className="border-2 border-border hover:border-primary/60 hover:shadow-md transition-all flex flex-col justify-between cursor-pointer group bg-card"
+              onClick={() => {
+                setErrorMessage('')
+                setMode('first_visit_form')
+              }}
+            >
+              <CardHeader className="p-6 pb-4 space-y-3">
+                <div className="w-12 h-12 rounded-2xl bg-primary/10 text-primary flex items-center justify-center group-hover:scale-105 transition-transform">
+                  <UserPlus className="h-6 w-6" />
+                </div>
+                <div className="space-y-1">
+                  <span className="text-[11px] font-mono uppercase tracking-wider text-primary font-semibold block">
+                    New Registration
+                  </span>
+                  <CardTitle className="font-serif text-2xl font-bold text-foreground">
+                    First Visit
+                  </CardTitle>
+                </div>
+                <CardDescription className="text-xs text-muted-foreground leading-relaxed">
+                  Create your MediKiosk patient profile
+                </CardDescription>
+              </CardHeader>
+
+              <CardContent className="p-6 pt-0">
+                <ul className="text-xs text-muted-foreground space-y-2 pt-2 border-t border-border/70">
+                  <li className="flex items-center gap-2">
+                    <Check className="h-3.5 w-3.5 text-primary shrink-0" />
+                    <span>Quick 1-minute profile setup</span>
+                  </li>
+                  <li className="flex items-center gap-2">
+                    <Check className="h-3.5 w-3.5 text-primary shrink-0" />
+                    <span>Digital health intake & AYUSH triage</span>
+                  </li>
+                </ul>
+              </CardContent>
+
+              <CardFooter className="p-6 pt-0">
+                <Button
+                  type="button"
+                  id="first-visit-btn"
+                  className="w-full justify-between font-semibold group-hover:bg-primary/90"
+                  size="lg"
+                  onClick={(e) => {
+                    e.stopPropagation()
+                    setErrorMessage('')
+                    setMode('first_visit_form')
+                  }}
+                >
+                  <span>Continue</span>
+                  <ArrowRight className="h-4 w-4" />
+                </Button>
+              </CardFooter>
+            </Card>
+
+            {/* Option Card 2: RETURNING PATIENT */}
+            <Card
+              className="border-2 border-border hover:border-primary/60 hover:shadow-md transition-all flex flex-col justify-between cursor-pointer group bg-card"
+              onClick={() => {
+                setErrorMessage('')
+                setMode('returning_patient_phone')
+              }}
+            >
+              <CardHeader className="p-6 pb-4 space-y-3">
+                <div className="w-12 h-12 rounded-2xl bg-secondary/15 text-secondary flex items-center justify-center group-hover:scale-105 transition-transform">
+                  <UserCheck className="h-6 w-6" />
+                </div>
+                <div className="space-y-1">
+                  <span className="text-[11px] font-mono uppercase tracking-wider text-secondary font-semibold block">
+                    Existing Record
+                  </span>
+                  <CardTitle className="font-serif text-2xl font-bold text-foreground">
+                    Returning Patient
+                  </CardTitle>
+                </div>
+                <CardDescription className="text-xs text-muted-foreground leading-relaxed">
+                  Continue with your existing profile
+                </CardDescription>
+              </CardHeader>
+
+              <CardContent className="p-6 pt-0">
+                <ul className="text-xs text-muted-foreground space-y-2 pt-2 border-t border-border/70">
+                  <li className="flex items-center gap-2">
+                    <Check className="h-3.5 w-3.5 text-secondary shrink-0" />
+                    <span>Instant record lookup by phone</span>
+                  </li>
+                  <li className="flex items-center gap-2">
+                    <Check className="h-3.5 w-3.5 text-secondary shrink-0" />
+                    <span>No repeated profile forms</span>
+                  </li>
+                </ul>
+              </CardContent>
+
+              <CardFooter className="p-6 pt-0">
+                <Button
+                  type="button"
+                  id="returning-patient-btn"
+                  variant="outline"
+                  className="w-full justify-between font-semibold border-border hover:bg-muted/50"
+                  size="lg"
+                  onClick={(e) => {
+                    e.stopPropagation()
+                    setErrorMessage('')
+                    setMode('returning_patient_phone')
+                  }}
+                >
+                  <span>Continue</span>
+                  <ArrowRight className="h-4 w-4" />
+                </Button>
+              </CardFooter>
+            </Card>
+          </div>
+        </div>
+      )}
+
+      {/* ========================================================================= */}
+      {/* 2. FIRST VISIT: REGISTRATION FORM */}
+      {/* ========================================================================= */}
+      {mode === 'first_visit_form' && (
+        <Card className="border-border shadow-xs animate-in fade-in-50 duration-200">
+          <CardHeader className="space-y-1 text-center pb-3">
+            <Badge variant="outline" className="mx-auto text-[10px] font-mono text-primary border-primary/30">
+              First Visit
+            </Badge>
+            <CardTitle className="font-serif text-2xl sm:text-3xl font-bold text-foreground">
+              Create your MediKiosk patient profile
+            </CardTitle>
+            <CardDescription className="text-xs sm:text-sm text-muted-foreground">
+              Enter your personal details to create your secure clinical intake record.
+            </CardDescription>
+          </CardHeader>
+
+          <form onSubmit={handleFirstVisitFormSubmit}>
+            <CardContent className="space-y-4 pt-2">
+              {/* Full Name */}
               <div className="space-y-1.5">
-                <label className="text-sm font-medium text-foreground">
-                  {lang === 'hi' ? 'पूरा नाम (Full Name) *' : 'Full Name *'}
+                <label className="text-xs font-semibold text-foreground">
+                  Full Name *
                 </label>
                 <Input
+                  id="patient-name-input"
                   sizeVariant="lg"
-                  placeholder={lang === 'hi' ? 'उदा. रमेश गुप्ता' : 'e.g. Ramesh Gupta'}
+                  placeholder="e.g. Ramesh Kumar"
                   value={name}
                   onChange={(e) => setName(e.target.value)}
-                  disabled={loading}
+                  autoFocus
                   required
                 />
               </div>
@@ -170,10 +406,11 @@ export function PatientLogin() {
               {/* Age & Gender */}
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                 <div className="space-y-1.5">
-                  <label className="text-sm font-medium text-foreground">
-                    {lang === 'hi' ? 'आयु (Age)' : 'Age'}
+                  <label className="text-xs font-semibold text-foreground">
+                    Age
                   </label>
                   <Input
+                    id="patient-age-input"
                     sizeVariant="lg"
                     type="number"
                     min="1"
@@ -181,14 +418,13 @@ export function PatientLogin() {
                     placeholder="e.g. 45"
                     value={age}
                     onChange={(e) => setAge(e.target.value)}
-                    disabled={loading}
                     className="font-mono"
                   />
                 </div>
 
                 <div className="space-y-1.5">
-                  <label className="text-sm font-medium text-foreground">
-                    {lang === 'hi' ? 'लिंग (Gender)' : 'Gender'}
+                  <label className="text-xs font-semibold text-foreground">
+                    Gender
                   </label>
                   <div className="grid grid-cols-3 gap-2">
                     {['Male', 'Female', 'Other'].map((g) => (
@@ -196,85 +432,96 @@ export function PatientLogin() {
                         key={g}
                         type="button"
                         onClick={() => setGender(g)}
-                        className={`h-12 rounded-md border text-sm font-medium transition-colors ${
+                        className={`h-11 rounded-md border text-xs font-semibold transition-colors cursor-pointer ${
                           gender === g
-                            ? 'bg-primary text-primary-foreground border-primary'
+                            ? 'bg-primary text-primary-foreground border-primary shadow-2xs'
                             : 'bg-card border-border hover:bg-muted/50 text-foreground'
                         }`}
                       >
-                        {g === 'Male' ? (lang === 'hi' ? 'पुरुष' : 'Male') :
-                         g === 'Female' ? (lang === 'hi' ? 'महिला' : 'Female') :
-                         (lang === 'hi' ? 'अन्य' : 'Other')}
+                        {g}
                       </button>
                     ))}
                   </div>
                 </div>
               </div>
 
-              {/* Phone */}
+              {/* Mobile Number */}
               <div className="space-y-1.5">
-                <label className="text-sm font-medium text-foreground">
-                  {lang === 'hi' ? 'मोबाइल नंबर (Phone Number) *' : 'Mobile Number *'}
+                <label className="text-xs font-semibold text-foreground flex items-center justify-between">
+                  <span>Mobile Number *</span>
+                  <span className="font-mono text-[10px] text-muted-foreground">10 Digits</span>
                 </label>
-                <Input
-                  sizeVariant="lg"
-                  type="tel"
-                  placeholder="e.g. 9876543210"
-                  value={phone}
-                  onChange={(e) => setPhone(e.target.value)}
-                  disabled={loading}
-                  className="font-mono text-base"
-                  required
-                />
-                <p className="text-xs text-muted-foreground">
-                  {lang === 'hi' ? 'परामर्श और पर्ची इस नंबर से जुड़ी रहेगी' : 'Consultation token and records are linked to this number'}
+                <div className="relative">
+                  <span className="absolute left-3 top-1/2 -translate-y-1/2 font-mono text-xs text-muted-foreground">
+                    +91
+                  </span>
+                  <Input
+                    id="patient-phone-input"
+                    sizeVariant="lg"
+                    type="tel"
+                    placeholder="98765 43210"
+                    value={phone}
+                    onChange={(e) => setPhone(e.target.value)}
+                    className="pl-11 font-mono text-base"
+                    required
+                  />
+                </div>
+                <p className="text-[11px] text-muted-foreground">
+                  Your verification OTP and future appointment slips will be sent to this number.
                 </p>
               </div>
             </CardContent>
 
-            <CardFooter className="pt-2">
+            <CardFooter className="pt-2 flex flex-col gap-2">
               <Button
                 type="submit"
                 size="xl"
-                disabled={loading}
-                className="w-full justify-between"
+                className="w-full justify-between font-semibold"
               >
-                {loading ? (
-                  <span className="flex items-center gap-2">
-                    <Loader2 className="h-5 w-5 animate-spin" />
-                    <span>{lang === 'hi' ? 'पंजीकरण हो रहा है...' : 'Registering...'}</span>
-                  </span>
-                ) : (
-                  <>
-                    <span>{lang === 'hi' ? 'आगे बढ़ें (सत्यापन)' : 'Continue to Verification'}</span>
-                    <ArrowRight className="h-5 w-5" />
-                  </>
-                )}
+                <span>Continue</span>
+                <ArrowRight className="h-5 w-5" />
+              </Button>
+
+              <Button
+                type="button"
+                variant="ghost"
+                size="sm"
+                onClick={() => {
+                  setErrorMessage('')
+                  setMode('choice')
+                }}
+                className="w-full text-xs text-muted-foreground hover:text-foreground"
+              >
+                Back to Options
               </Button>
             </CardFooter>
           </form>
         </Card>
       )}
 
-      {/* Mock OTP Verification Step */}
-      {step === 'otp' && (
-        <Card className="border-primary/40 shadow-sm">
-          <form onSubmit={handleOtpVerify}>
-            <CardHeader className="pb-3 text-center">
-              <div className="h-12 w-12 rounded-full bg-primary/10 text-primary mx-auto flex items-center justify-center mb-2">
+      {/* ========================================================================= */}
+      {/* 3. FIRST VISIT: OTP VERIFICATION */}
+      {/* ========================================================================= */}
+      {mode === 'first_visit_otp' && (
+        <Card className="border-border shadow-xs text-center animate-in fade-in-50 duration-200">
+          <form onSubmit={handleFirstVisitOtpVerify}>
+            <CardHeader className="space-y-2 pb-2">
+              <div className="w-12 h-12 rounded-full bg-primary/10 text-primary mx-auto flex items-center justify-center mb-1">
                 <KeyRound className="h-6 w-6" />
               </div>
-              <CardTitle className="text-lg">
-                {lang === 'hi' ? '6-अंकीय सत्यापन कोड' : '6-Digit Verification Code'}
+              <CardTitle className="font-serif text-2xl sm:text-3xl font-bold text-foreground">
+                Verify your mobile number
               </CardTitle>
-              <CardDescription>
-                {lang === 'hi' ? 'डेमो मोड में कोई भी 6 अंक मान्य हैं' : 'Demonstration mode: enter any 6 digits to proceed'}
+              <CardDescription className="text-xs sm:text-sm text-muted-foreground">
+                Enter the 6-digit verification code sent to{' '}
+                <strong className="font-mono text-foreground">+91 {phone}</strong>
               </CardDescription>
             </CardHeader>
 
-            <CardContent className="space-y-4">
-              <div className="space-y-2">
+            <CardContent className="space-y-4 pt-2">
+              <div className="space-y-2 max-w-xs mx-auto">
                 <Input
+                  id="otp-input"
                   sizeVariant="lg"
                   type="text"
                   maxLength={6}
@@ -286,7 +533,7 @@ export function PatientLogin() {
                     setOtp(val)
                     if (otpError) setOtpError('')
                   }}
-                  className="font-mono text-center text-2xl tracking-[0.4em] font-bold h-16"
+                  className="font-mono text-center text-3xl tracking-[0.4em] font-bold h-16"
                 />
 
                 {otpError && (
@@ -296,27 +543,275 @@ export function PatientLogin() {
                 )}
               </div>
 
-              {/* Demo Helper Banner */}
-              <div className="p-3 bg-muted/60 rounded-md border border-border text-center">
-                <span className="font-mono text-xs text-muted-foreground block">
-                  Demo mode: enter any 6-digit code (e.g. 123456)
+              {/* Demo Helper Pill */}
+              <div className="p-3 bg-muted/50 rounded-lg border border-border text-center max-w-xs mx-auto">
+                <span className="font-mono text-[11px] text-muted-foreground block">
+                  Demo mode: Enter any 6 digits (e.g. 123456)
                 </span>
               </div>
             </CardContent>
 
-            <CardFooter className="pt-2">
+            <CardFooter className="pt-2 flex flex-col gap-2">
               <Button
                 type="submit"
                 size="xl"
-                className="w-full justify-between"
+                disabled={loading}
+                className="w-full justify-between font-semibold"
               >
-                <span>{lang === 'hi' ? 'सत्यापित करें और आगे बढ़ें' : 'Verify & Continue'}</span>
-                <ArrowRight className="h-5 w-5" />
+                {loading ? (
+                  <span className="flex items-center gap-2 mx-auto">
+                    <Loader2 className="h-5 w-5 animate-spin" />
+                    <span>Creating profile & continuing...</span>
+                  </span>
+                ) : (
+                  <>
+                    <span>Verify & Continue</span>
+                    <ArrowRight className="h-5 w-5" />
+                  </>
+                )}
+              </Button>
+
+              <Button
+                type="button"
+                variant="ghost"
+                size="sm"
+                onClick={() => setMode('first_visit_form')}
+                className="text-xs text-muted-foreground hover:text-foreground"
+              >
+                Change mobile number or details
               </Button>
             </CardFooter>
           </form>
         </Card>
       )}
+
+      {/* ========================================================================= */}
+      {/* 4. RETURNING PATIENT: MOBILE NUMBER ONLY */}
+      {/* ========================================================================= */}
+      {mode === 'returning_patient_phone' && (
+        <Card className="border-border shadow-xs animate-in fade-in-50 duration-200">
+          <CardHeader className="space-y-1 text-center pb-3">
+            <Badge variant="outline" className="mx-auto text-[10px] font-mono text-secondary border-secondary/30">
+              Returning Patient
+            </Badge>
+            <CardTitle className="font-serif text-2xl sm:text-3xl font-bold text-foreground">
+              Enter your registered mobile number
+            </CardTitle>
+            <CardDescription className="text-xs sm:text-sm text-muted-foreground">
+              We'll look up your existing records and clinical history.
+            </CardDescription>
+          </CardHeader>
+
+          <form onSubmit={handleReturningPatientPhoneSubmit}>
+            <CardContent className="space-y-4 pt-2">
+              <div className="space-y-1.5">
+                <label className="text-xs font-semibold text-foreground flex items-center justify-between">
+                  <span>Mobile Number</span>
+                  <span className="font-mono text-[10px] text-muted-foreground">10 Digits</span>
+                </label>
+                <div className="relative">
+                  <span className="absolute left-3 top-1/2 -translate-y-1/2 font-mono text-xs text-muted-foreground">
+                    +91
+                  </span>
+                  <Input
+                    id="returning-phone-input"
+                    sizeVariant="lg"
+                    type="tel"
+                    placeholder="98765 43210"
+                    value={phone}
+                    onChange={(e) => setPhone(e.target.value)}
+                    className="pl-11 font-mono text-base"
+                    autoFocus
+                    required
+                  />
+                </div>
+              </div>
+
+              {/* Demo Quick Hint Pill */}
+              <div className="p-3 bg-muted/40 rounded-lg border border-border text-xs text-muted-foreground space-y-1">
+                <div className="font-semibold text-foreground flex items-center gap-1.5">
+                  <Sparkles className="h-3.5 w-3.5 text-amber-600" />
+                  <span>Demo Returning Numbers:</span>
+                </div>
+                <div className="flex flex-wrap gap-2 pt-1 font-mono text-xs">
+                  <button
+                    type="button"
+                    onClick={() => setPhone('9876543210')}
+                    className="px-2 py-1 rounded bg-card border border-border hover:border-primary text-foreground"
+                  >
+                    9876543210 (Ramesh Kumar)
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setPhone('9810012345')}
+                    className="px-2 py-1 rounded bg-card border border-border hover:border-primary text-foreground"
+                  >
+                    9810012345 (Sunita Sharma)
+                  </button>
+                </div>
+              </div>
+            </CardContent>
+
+            <CardFooter className="pt-2 flex flex-col gap-2">
+              <Button
+                type="submit"
+                size="xl"
+                className="w-full justify-between font-semibold"
+              >
+                <span>Continue</span>
+                <ArrowRight className="h-5 w-5" />
+              </Button>
+
+              <Button
+                type="button"
+                variant="ghost"
+                size="sm"
+                onClick={() => {
+                  setErrorMessage('')
+                  setMode('choice')
+                }}
+                className="w-full text-xs text-muted-foreground hover:text-foreground"
+              >
+                Back to Options
+              </Button>
+            </CardFooter>
+          </form>
+        </Card>
+      )}
+
+      {/* ========================================================================= */}
+      {/* 5. RETURNING PATIENT: OTP VERIFICATION */}
+      {/* ========================================================================= */}
+      {mode === 'returning_patient_otp' && (
+        <Card className="border-border shadow-xs text-center animate-in fade-in-50 duration-200">
+          <form onSubmit={handleReturningPatientOtpVerify}>
+            <CardHeader className="space-y-2 pb-2">
+              <div className="w-12 h-12 rounded-full bg-secondary/15 text-secondary mx-auto flex items-center justify-center mb-1">
+                <KeyRound className="h-6 w-6" />
+              </div>
+              <CardTitle className="font-serif text-2xl sm:text-3xl font-bold text-foreground">
+                Verify your mobile number
+              </CardTitle>
+              <CardDescription className="text-xs sm:text-sm text-muted-foreground">
+                Enter the 6-digit verification code sent to{' '}
+                <strong className="font-mono text-foreground">+91 {phone}</strong>
+              </CardDescription>
+            </CardHeader>
+
+            <CardContent className="space-y-4 pt-2">
+              <div className="space-y-2 max-w-xs mx-auto">
+                <Input
+                  id="otp-input"
+                  sizeVariant="lg"
+                  type="text"
+                  maxLength={6}
+                  autoFocus
+                  placeholder="••••••"
+                  value={otp}
+                  onChange={(e) => {
+                    const val = e.target.value.replace(/\D/g, '')
+                    setOtp(val)
+                    if (otpError) setOtpError('')
+                  }}
+                  className="font-mono text-center text-3xl tracking-[0.4em] font-bold h-16"
+                />
+
+                {otpError && (
+                  <p className="text-xs text-destructive text-center font-medium">
+                    {otpError}
+                  </p>
+                )}
+              </div>
+
+              {/* Demo Helper Pill */}
+              <div className="p-3 bg-muted/50 rounded-lg border border-border text-center max-w-xs mx-auto">
+                <span className="font-mono text-[11px] text-muted-foreground block">
+                  Demo mode: Enter any 6 digits (e.g. 123456)
+                </span>
+              </div>
+            </CardContent>
+
+            <CardFooter className="pt-2 flex flex-col gap-2">
+              <Button
+                type="submit"
+                size="xl"
+                disabled={loading}
+                className="w-full justify-between font-semibold"
+              >
+                {loading ? (
+                  <span className="flex items-center gap-2 mx-auto">
+                    <Loader2 className="h-5 w-5 animate-spin" />
+                    <span>Looking up existing profile...</span>
+                  </span>
+                ) : (
+                  <>
+                    <span>Verify & Continue</span>
+                    <ArrowRight className="h-5 w-5" />
+                  </>
+                )}
+              </Button>
+
+              <Button
+                type="button"
+                variant="ghost"
+                size="sm"
+                onClick={() => setMode('returning_patient_phone')}
+                className="text-xs text-muted-foreground hover:text-foreground"
+              >
+                Change mobile number
+              </Button>
+            </CardFooter>
+          </form>
+        </Card>
+      )}
+
+      {/* ========================================================================= */}
+      {/* 6. PROFILE NOT FOUND SCREEN */}
+      {/* ========================================================================= */}
+      {mode === 'profile_not_found' && (
+        <Card className="border-border shadow-xs text-center py-8 px-4 sm:px-6 space-y-6 animate-in fade-in-50 duration-200">
+          <div className="w-16 h-16 rounded-full bg-amber-500/10 text-amber-600 dark:text-amber-400 mx-auto flex items-center justify-center">
+            <UserX className="h-8 w-8" />
+          </div>
+
+          <div className="space-y-2 max-w-md mx-auto">
+            <h2 className="font-serif text-2xl sm:text-3xl font-bold text-foreground">
+              We couldn't find a profile with this number.
+            </h2>
+            <p className="text-xs sm:text-sm text-muted-foreground leading-relaxed">
+              No existing MediKiosk records were found for <strong className="font-mono text-foreground">+91 {phone}</strong>. You can easily create your profile right now to continue.
+            </p>
+          </div>
+
+          <div className="flex flex-col sm:flex-row items-center justify-center gap-3 pt-2 max-w-md mx-auto">
+            <Button
+              type="button"
+              id="create-first-visit-btn"
+              size="lg"
+              onClick={handleSwitchToFirstVisit}
+              className="w-full sm:w-auto font-semibold gap-2"
+            >
+              <span>Create First Visit Profile</span>
+              <ArrowRight className="h-4 w-4" />
+            </Button>
+
+            <Button
+              type="button"
+              variant="outline"
+              size="lg"
+              onClick={() => {
+                setPhone('')
+                setMode('returning_patient_phone')
+              }}
+              className="w-full sm:w-auto border-border text-muted-foreground hover:text-foreground"
+            >
+              Try Another Number
+            </Button>
+          </div>
+        </Card>
+      )}
     </div>
   )
 }
+
+export default PatientLogin

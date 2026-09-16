@@ -104,10 +104,12 @@ public class AssessmentService {
         newCase.setStatus("IN_PROGRESS");
 
         ClinicalInterviewState initState = new ClinicalInterviewState();
-        newCase.setClinicalState(serializeJson(initState));
+        initState.setLanguage(language);
 
         String welcomeMsg = getInitialGreeting(language);
         List<String> options = getInitialOptions(language);
+        initState.recordQuestion("CHIEF_COMPLAINT", welcomeMsg, now());
+        newCase.setClinicalState(serializeJson(initState));
 
         ChatMessageDto welcomeChat = new ChatMessageDto("assistant", welcomeMsg, now(), "GENERAL");
         List<ChatMessageDto> history = new ArrayList<>();
@@ -133,6 +135,7 @@ public class AssessmentService {
                 toGenericMap(initState)
         );
         newRes.setPatientId(patient.getId());
+        newRes.setLanguage(language);
         return newRes;
     }
 
@@ -149,18 +152,26 @@ public class AssessmentService {
         Patient patient = patientRepository.findById(patientId)
                 .orElseThrow(() -> new IllegalArgumentException("Patient not found with ID: " + patientId));
 
+        String userText = request.getMessage() != null ? request.getMessage().trim() : "";
         String reqLang = request.getLanguage();
-        String language = normalizeLanguage(reqLang != null && !reqLang.isBlank() ? reqLang : patient.getPreferredLanguage());
-        if (reqLang != null && !reqLang.isBlank() && !language.equalsIgnoreCase(patient.getPreferredLanguage())) {
+        String baseLang = normalizeLanguage(reqLang != null && !reqLang.isBlank() ? reqLang : patient.getPreferredLanguage());
+        String language = detectLanguageSwitch(baseLang, userText);
+        if (!language.equalsIgnoreCase(patient.getPreferredLanguage())) {
             patient.setPreferredLanguage(language);
             patientRepository.save(patient);
         }
 
-        String userText = request.getMessage() != null ? request.getMessage().trim() : "";
-
         // 1. Parse existing conversation history and clinical state
         List<ChatMessageDto> history = parseHistory(c.getConversationHistory());
         ClinicalInterviewState state = parseClinicalState(c.getClinicalState());
+        state.setLanguage(language);
+
+        // 1a. Explicit Question -> Answer Satisfaction Architecture
+        // Directly satisfy the pending question asked by AI in previous turn
+        if (state.getLastQuestionSemanticKey() != null && !state.getLastQuestionSemanticKey().isBlank()) {
+            logger.info("Satisfying pending question concept '{}' with user input: '{}'", state.getLastQuestionSemanticKey(), userText);
+            state.satisfyPendingQuestion(userText);
+        }
 
         // Track last assistant question BEFORE appending the new patient message
         String lastAssistantQuestion = null;
@@ -197,6 +208,7 @@ public class AssessmentService {
 
         // 3. Robust Deterministic Multi-Fact & Symptom Extraction FIRST (updates state before question reasoning)
         extractAndMergeFacts(userText, state);
+        state.syncAnsweredFields();
 
         logger.info("Case #{} state after extraction: ChiefComplaint='{}' | Duration='{}' | Location='{}' | Severity='{}' | Triggers='{}'",
                 c.getId(), state.getChiefComplaint(), state.getDuration(), state.getLocation(), state.getSeverity(), state.getAggravatingFactors());
@@ -208,6 +220,10 @@ public class AssessmentService {
         if (aiResult.extractedFacts != null && !aiResult.extractedFacts.isEmpty()) {
             state.mergeExtractedFacts(aiResult.extractedFacts);
         }
+        state.syncAnsweredFields();
+
+        // QUESTION VALIDATION GATE: Deterministically validate Gemini's candidate question against clinical state
+        validateAndFilterCandidateQuestion(state, aiResult, language, lastAssistantQuestion);
 
         // 5. Update Case Entity from Clinical State
         if (state.getChiefComplaint() != null && !state.getChiefComplaint().isBlank()) {
@@ -215,7 +231,7 @@ public class AssessmentService {
         }
         updateCaseHpiAndSymptoms(c, state);
 
-        // 6. Check Completion: either Gemini signaled completion or clinical state is sufficient
+        // 6. Check Completion: either Gemini/ValidationGate signaled completion or clinical state is sufficient
         boolean isSufficient = aiResult.isAssessmentComplete || state.isClinicallySufficient(userTurnCount);
 
         // Update AYUSH map from state if present
@@ -224,12 +240,19 @@ public class AssessmentService {
         if (state.getAyushAgni() != null) ayushMap.put("agni", state.getAyushAgni());
         if (state.getAyushNidra() != null) ayushMap.put("nidra", state.getAyushNidra());
         if (state.getAyushMala() != null) ayushMap.put("mala", state.getAyushMala());
+        if (state.getAyushAharaVihara() != null) ayushMap.put("aharaVihara", state.getAyushAharaVihara());
         if (!ayushMap.isEmpty()) {
             c.setAyushData(serializeJson(ayushMap));
         }
 
         if (isSufficient && userTurnCount >= 2) {
             // COMPLETE INTAKE!
+            if (!ayushMap.containsKey("agni")) ayushMap.put("agni", "Normal / Not reported");
+            if (!ayushMap.containsKey("nidra")) ayushMap.put("nidra", "Normal / Not reported");
+            if (!ayushMap.containsKey("mala")) ayushMap.put("mala", "Normal / Not reported");
+            if (!ayushMap.containsKey("aharaVihara")) ayushMap.put("aharaVihara", "Normal / Not reported");
+            c.setAyushData(serializeJson(ayushMap));
+
             Map<String, Object> prakritiResult = prakritiService.calculatePrakriti(ayushMap, language);
             c.setPrakritiResult(serializeJson(prakritiResult));
 
@@ -263,17 +286,10 @@ public class AssessmentService {
                     toGenericMap(state)
             );
             completedRes.setPatientId(patient.getId());
+            completedRes.setLanguage(language);
             return completedRes;
         } else {
             // CONTINUE ADAPTIVE INTERVIEW
-            // Question Deduplication Safety Guard: Prevent identical repetition
-            if (lastAssistantQuestion != null && (isSubstantiallyIdentical(aiResult.nextQuestion, lastAssistantQuestion)
-                    || isSubstantiallyIdentical(buildAssistantMessage(aiResult, language, false), lastAssistantQuestion))) {
-                logger.warn("Substantially identical question detected ('{}' vs previous '{}'). Deduplicating to next clinical dimension.",
-                        aiResult.nextQuestion, lastAssistantQuestion);
-                deduplicateQuestion(aiResult, state, language, lastAssistantQuestion);
-            }
-
             String assistantText = buildAssistantMessage(aiResult, language, redFlagRes.isDetected());
             logger.info("Case #{} assistant response: '{}' | Language='{}'", c.getId(), assistantText, language);
 
@@ -301,6 +317,7 @@ public class AssessmentService {
                     toGenericMap(state)
             );
             ongoingRes.setPatientId(patient.getId());
+            ongoingRes.setLanguage(language);
             return ongoingRes;
         }
     }
@@ -338,6 +355,7 @@ public class AssessmentService {
                 toGenericMap(state)
         );
         getRes.setPatientId(c.getPatientId());
+        getRes.setLanguage(state != null && state.getLanguage() != null ? state.getLanguage() : "en");
         return getRes;
     }
 
@@ -427,9 +445,13 @@ public class AssessmentService {
                    - Extract ALL facts mentioned into `extractedFacts`.
                    - If patient explicitly says a symptom is absent (e.g., 'swelling nahi hai', 'no fever'), record it in `pertinentNegatives`.
                    - If patient contradicts or corrects an earlier statement (e.g., 'Actually 2 weeks se hai' after saying '3 din'), update the fact with the newest value.
-                3. CONVERSATIONAL MANNER:
-                   - Use a brief, natural acknowledgement if appropriate ('Got it.', 'Okay.', 'Samajh gaya.', 'Achha.', 'That helps.').
-                   - DO NOT use repetitive robotic phrases like 'Thank you for sharing that' or 'Thank you for your response'.
+                3. STRICT RESPONSE STYLE & CONVERSATIONAL MANNER:
+                   - Every normal assistant turn MUST contain:
+                     1 short natural acknowledgement when appropriate ('Samajh gaya.', 'Got it.', 'Achha.', 'Theek hai.')
+                     +
+                     strictly 1 clear clinical question.
+                   - Keep responses strictly around 1–2 short sentences.
+                   - NEVER write paragraphs, NEVER give medical lectures, NEVER give diagnosis, NEVER prescribe medicines, and NEVER give reassurance fluff.
                    - Speak strictly in %s.
                 4. TOPIC JUMPING / UNRELATED QUESTIONS:
                    - If patient suddenly asks something unrelated (e.g. 'Waise kya main chai pee sakta hoon?'), answer briefly and safely:
@@ -459,16 +481,35 @@ public class AssessmentService {
                    - If asking about associated symptoms: provide symptom options (e.g., Chills/shivering, Sore throat, Body ache, None).
                    - If asking about triggers: provide activity/trigger options (e.g., Bright light/sound, Stress/screen time, Climbing stairs, Constant).
                    - If asking about medicines: provide medication options (e.g., No medicine, Painkiller/fever meds, BP/Diabetes meds).
-                   - NEVER output severity options if the question is about location, symptoms, duration, or medicines!
-                7. DYNAMIC COMPLETION:
-                   - If chief complaint, timeline/duration, key characteristics/severity/triggers, and relevant medical history/medicines are reasonably clear, set `isAssessmentComplete`: true.
-                   - Do not prolong the interview unnecessarily.
+                   - If asking about digestion/Agni: provide digestion options (e.g., Normal & balanced, Gas / bloating, Hyperacidity, Slow digestion).
+                   - If asking about sleep/Nidra: provide sleep options (e.g., Sound & restful, Disturbed / waking up, Trouble falling asleep, Less sleep).
+                   - If asking about bowel/Mala: provide elimination options (e.g., Regular & clear, Constipation / irregular, Loose / frequent).
+                   - If asking about diet/routine: provide routine options (e.g., Balanced & active, Irregular meals, Sedentary / desk job).
+                   - NEVER output severity options if the question is about location, symptoms, duration, medicines, or AYUSH!
+                7. NATURAL DISTRIBUTED AYUSH INTAKE:
+                   - Do NOT ask AYUSH questions as an upfront block, questionnaire, or interrogation.
+                   - Introduce AYUSH questions ONE AT A TIME across turns naturally AFTER core clinical history (complaint, duration, severity/location, triggers, and history/meds) is captured.
+                   - Explore all 4 dimensions in order:
+                     1. Agni (appetite and digestion)
+                     2. Nidra (sleep pattern)
+                     3. Mala (bowel movements / elimination)
+                     4. Ahara/Vihara (dietary habits and daily routine/activity)
+                   - CRITICAL: If the patient already volunteered any of these dimensions (see KNOWN CLINICAL FACTS above), that dimension is ALREADY KNOWN. NEVER ASK IT AGAIN! Skip it immediately and ask the next unaddressed AYUSH dimension.
+                   - Keep AYUSH questions conversational and integrated into the intake (e.g. 'Doctor ke liye aapki routine samajhne ke liye: Aapki bhookh aur digestion kaisa rehta hai?'). Never announce 'Now I will ask AYUSH questions'.
+                8. INFORMATION SUFFICIENCY COMPLETION:
+                   - Set `isAssessmentComplete: true` ONLY when:
+                     1. Primary complaint is clear.
+                     2. Relevant timeline is captured.
+                     3. Complaint characteristics (location, severity, triggers) are explored.
+                     4. Relevant medical history/medication/allergy information has been addressed.
+                     5. All 4 AYUSH dimensions (Agni, Nidra, Mala, Ahara/Vihara) are explored or recorded.
+                   - Do NOT complete prematurely before these essential clinical facts are gathered.
                 
                 RESPOND ONLY WITH VALID JSON (no markdown code blocks, no preamble):
                 {
-                  "acknowledgement": "brief acknowledgement if appropriate, or empty",
+                  "acknowledgement": "brief 2-4 word acknowledgement if appropriate ('Samajh gaya.', 'Got it.'), or empty",
                   "interruptionResponse": "brief safe answer if patient asked unrelated question, or empty",
-                  "nextQuestion": "strictly 1 adaptive question in target language",
+                  "nextQuestion": "strictly 1 clear adaptive question in target language (1 sentence)",
                   "quickOptions": ["Option 1", "Option 2", "Option 3"],
                   "extractedFacts": {
                     "chiefComplaint": "...",
@@ -489,7 +530,8 @@ public class AssessmentService {
                     "personalLifestyle": "...",
                     "ayushAgni": "...",
                     "ayushNidra": "...",
-                    "ayushMala": "..."
+                    "ayushMala": "...",
+                    "ayushAharaVihara": "..."
                   },
                   "isAssessmentComplete": false
                 }
@@ -569,6 +611,9 @@ public class AssessmentService {
             String newDur = normalizeDurationString(corrMat.group(2), corrMat.group(3));
             state.setDuration(newDur);
             state.getProvenance().put("duration", "PATIENT_CORRECTED");
+            if (!state.getSymptoms().isEmpty()) {
+                state.getSymptoms().get(0).setDuration(newDur);
+            }
         }
 
         // B. Multi-symptom clauses (e.g. "2 din se fever ho rha or 5 din se jukham", "2 din se fever hai aur 5 din se cough hai",
@@ -663,6 +708,9 @@ public class AssessmentService {
                 }
                 state.setChiefComplaint(String.join(" and ", sNames));
                 state.getProvenance().put("chiefComplaint", "PATIENT_REPORTED");
+            } else if (lower.contains("pet") || lower.contains("stomach") || lower.contains("burning") || lower.contains("jalan") || lower.contains("acidity") || lower.contains("पेट")) {
+                state.setChiefComplaint("Stomach burning / Pet mein jalan");
+                state.getProvenance().put("chiefComplaint", "PATIENT_REPORTED");
             } else if (lower.contains("dard") || lower.contains("pain") || lower.contains("takleef") || lower.contains("दर्द")) {
                 if (lower.contains("ghutne") || lower.contains("knee") || lower.contains("घुटने")) {
                     state.setChiefComplaint("Knee pain / Ghutne mein dard");
@@ -746,7 +794,9 @@ public class AssessmentService {
         // H. Aggravating factors / Triggers (stairs, walking, light, sound, stress, sleep, etc.)
         if (state.getAggravatingFactors() == null || state.getAggravatingFactors().isBlank()) {
             String detectedTrig = null;
-            if (lower.contains("light") || lower.contains("sound") || lower.contains("roshni") || lower.contains("aawaz") || lower.contains("रोशनी") || lower.contains("आवाज")) {
+            if (lower.contains("khana") || lower.contains("food") || lower.contains("eating") || lower.contains("खाने के बाद")) {
+                detectedTrig = "Khana khane ke baad / Postprandial (After meals)";
+            } else if (lower.contains("light") || lower.contains("sound") || lower.contains("roshni") || lower.contains("aawaz") || lower.contains("रोशनी") || lower.contains("आवाज")) {
                 detectedTrig = "Bright light or loud sounds";
             } else if (lower.contains("stress") || lower.contains("neend") || lower.contains("sleep") || lower.contains("तनाव")) {
                 detectedTrig = "Stress or lack of sleep";
@@ -773,7 +823,10 @@ public class AssessmentService {
 
         // I. Relieving factors
         if (state.getRelievingFactors() == null || state.getRelievingFactors().isBlank()) {
-            if (lower.contains("rest") || lower.contains("aaram") || lower.contains("baithne") || lower.contains("sitting") || lower.contains("आराम")) {
+            if (lower.contains("paracetamol") || lower.contains("dawa") || lower.contains("medicine") || lower.contains("painkiller")) {
+                state.setRelievingFactors("Paracetamol / Medication");
+                state.getProvenance().put("relievingFactors", "PATIENT_REPORTED");
+            } else if (lower.contains("rest") || lower.contains("aaram") || lower.contains("baithne") || lower.contains("sitting") || lower.contains("आराम")) {
                 state.setRelievingFactors("Rest / Sitting");
                 state.getProvenance().put("relievingFactors", "PATIENT_REPORTED");
             }
@@ -806,28 +859,56 @@ public class AssessmentService {
         if (lower.contains("metformin")) {
             state.setCurrentMedicines("Metformin");
             state.getProvenance().put("currentMedicines", "PATIENT_REPORTED");
+            state.markDimensionAddressed("MEDICAL_HISTORY");
         } else if (lower.contains("paracetamol") || lower.contains("painkiller")) {
             state.setCurrentMedicines("Paracetamol / Pain relief");
             state.getProvenance().put("currentMedicines", "PATIENT_REPORTED");
+            state.markDimensionAddressed("MEDICAL_HISTORY");
         }
 
-        // M. AYUSH Dimensions
+        // Allergies
+        if (lower.contains("koi allergy nahi") || lower.contains("no allergy") || lower.contains("no allergies") || lower.contains("कोई एलर्जी नहीं")) {
+            state.setAllergies("No known allergies reported by patient");
+            state.getProvenance().put("allergies", "PATIENT_REPORTED");
+            state.markDimensionAddressed("MEDICAL_HISTORY");
+        }
+
+        // Personal / Lifestyle History
+        if (state.getPersonalLifestyle() == null || state.getPersonalLifestyle().isBlank()) {
+            if (lower.contains("desk job") || lower.contains("sedentary") || lower.contains("बैठकर काम")) {
+                state.setPersonalLifestyle("Desk job / Sedentary work routine");
+                state.getProvenance().put("personalLifestyle", "PATIENT_REPORTED");
+            }
+        }
+
+        // M. AYUSH Dimensions (Agni, Nidra, Mala, Ahara/Vihara)
         if (state.getAyushAgni() == null || state.getAyushAgni().isBlank()) {
-            if (lower.contains("digestion") || lower.contains("pachan") || lower.contains("bhookh") || lower.contains("gas") || lower.contains("appetite") || lower.contains("पाचन") || lower.contains("भूख")) {
+            if (lower.contains("digestion") || lower.contains("pachan") || lower.contains("bhookh") || lower.contains("gas") || lower.contains("appetite") || lower.contains("पाचन") || lower.contains("भूख") || lower.contains("acidity")
+                    || lower.contains("normal balanced") || lower.contains("balanced") || lower.contains("santulit") || lower.contains("slow / heaviness") || lower.contains("gas / bloating") || lower.contains("dheema pachan") || lower.contains("tez bhookh") || lower.contains("theek")) {
                 state.setAyushAgni(text);
                 state.getProvenance().put("ayushAgni", "PATIENT_REPORTED");
+                state.markDimensionAddressed("AYUSH_AGNI");
             }
         }
         if (state.getAyushNidra() == null || state.getAyushNidra().isBlank()) {
-            if (lower.contains("sleep") || lower.contains("neend") || lower.contains("नींद")) {
+            if (lower.contains("sleep") || lower.contains("neend") || lower.contains("नींद") || lower.contains("sound") || lower.contains("restful") || lower.contains("disturbed") || lower.contains("waking up") || lower.contains("gehri") || lower.contains("insomnia") || lower.contains("toot ti")) {
                 state.setAyushNidra(text);
                 state.getProvenance().put("ayushNidra", "PATIENT_REPORTED");
+                state.markDimensionAddressed("AYUSH_NIDRA");
             }
         }
         if (state.getAyushMala() == null || state.getAyushMala().isBlank()) {
-            if (lower.contains("bowel") || lower.contains("pet saaf") || lower.contains("kabz") || lower.contains("constipation") || lower.contains("मल")) {
+            if (lower.contains("bowel") || lower.contains("pet saaf") || lower.contains("kabz") || lower.contains("constipation") || lower.contains("मल") || lower.contains("dast") || lower.contains("loose motion") || lower.contains("regular") || lower.contains("clear") || lower.contains("irregular")) {
                 state.setAyushMala(text);
                 state.getProvenance().put("ayushMala", "PATIENT_REPORTED");
+                state.markDimensionAddressed("AYUSH_MALA");
+            }
+        }
+        if (state.getAyushAharaVihara() == null || state.getAyushAharaVihara().isBlank()) {
+            if (lower.contains("diet") || lower.contains("routine") || lower.contains("lifestyle") || lower.contains("exercise") || lower.contains("walk") || lower.contains("desk job") || lower.contains("दिनचर्या") || lower.contains("खानपान") || lower.contains("physical activity") || lower.contains("active") || lower.contains("sedentary") || lower.contains("home meals") || lower.contains("spicy")) {
+                state.setAyushAharaVihara(text);
+                state.getProvenance().put("ayushAharaVihara", "PATIENT_REPORTED");
+                state.markDimensionAddressed("AYUSH_AHARA_VIHARA");
             }
         }
     }
@@ -942,170 +1023,18 @@ public class AssessmentService {
      */
     private AiTurnResult getDeterministicFallbackTurn(String language, ClinicalInterviewState state, int turnCount) {
         AiTurnResult res = new AiTurnResult();
-        boolean isHi = "hi".equalsIgnoreCase(language);
-        boolean isHinglish = "hinglish".equalsIgnoreCase(language);
-
-        // Dynamic sufficiency check: If enough clinical dimensions are captured, complete!
         if (state.isClinicallySufficient(turnCount)) {
             res.isAssessmentComplete = true;
             res.nextQuestion = getCompletionMessage(language);
+            res.quickOptions = Collections.emptyList();
             return res;
         }
 
-        // 1. Duration question: ONLY ask if duration is NOT already known
-        if (!state.hasDurationKnown()) {
-            if (isHi) {
-                res.nextQuestion = "समझ गया। यह परेशानी आपको कब से हो रही है?";
-                res.quickOptions = List.of("1-2 दिनों से", "लगभग 1-2 हफ्ते से", "1 महीने से अधिक", "आज ही शुरू हुआ");
-            } else if (isHinglish) {
-                res.nextQuestion = "Samajh gaya. Yeh pareshani aapko kab se ho rahi hai?";
-                res.quickOptions = List.of("1-2 din se", "Lagbhag 1-2 hafte se", "1 mahine se zyada", "Aaj hi shuru hua");
-            } else {
-                res.nextQuestion = "Got it. How long have you been experiencing this issue?";
-                res.quickOptions = List.of("1-2 days", "About 1-2 weeks", "Over a month", "Just started today");
-            }
-            return res;
-        }
-
-        // 2. If patient has Fever / Cold / Cough / Respiratory complaint
-        boolean isFebrileOrResp = hasFebrileOrRespiratorySymptom(state);
-        if (isFebrileOrResp && (state.getAssociatedSymptoms() == null || state.getAssociatedSymptoms().isBlank())) {
-            if (isHi) {
-                res.nextQuestion = "समझ गया। क्या बुखार के साथ ठंड, कंपकंपी या गले में दर्द/खराश भी महसूस हो रही है?";
-                res.quickOptions = List.of("ठंड / कंपकंपी लगती है", "गले में दर्द / खराश है", "शरीर में दर्द / कमजोरी", "केवल बुखार और जुकाम है");
-            } else if (isHinglish) {
-                res.nextQuestion = "Samajh gaya. Kya bukhar ke sath thand, kapkapi ya gale mein dard/kharash bhi ho rahi hai?";
-                res.quickOptions = List.of("Thand / Kapkapi lagti hai", "Gale mein dard hai", "Body ache / Kamzori hai", "Sirf bukhar aur sardi hai");
-            } else {
-                res.nextQuestion = "Understood. Are you experiencing chills, shivering, or a sore throat along with the fever?";
-                res.quickOptions = List.of("Chills / shivering", "Sore throat", "Body ache / fatigue", "Only fever & cold");
-            }
-            return res;
-        }
-
-        boolean isHeadache = isHeadacheComplaint(state);
-
-        // 3. Location question: ONLY ask if location is NOT yet known
-        if (!state.hasLocationKnown()) {
-            if (isHi) {
-                res.nextQuestion = isHeadache
-                        ? "यह सिरदर्द विशेष रूप से किस जगह पर है - माथे पर, सिर के एक तरफ या पूरे सिर में?"
-                        : "तकलीफ शरीर के किस हिस्से में सबसे ज्यादा महसूस हो रही है?";
-                res.quickOptions = isHeadache
-                        ? List.of("माथे पर (Forehead)", "सिर के एक तरफ (One side)", "पूरे सिर में (All over)", "गर्दन तक जाता है")
-                        : List.of("दाहिनी तरफ (Right)", "बाईं तरफ (Left)", "दोनों तरफ (Both)", "पूरे हिस्से में");
-            } else if (isHinglish) {
-                res.nextQuestion = isHeadache
-                        ? "Yeh headache exactly kahan ho raha hai - forehead par, ek taraf ya poore sar mein?"
-                        : "Yeh takleef shareer ke kis hisse mein sabse zyada ho rahi hai?";
-                res.quickOptions = isHeadache
-                        ? List.of("Forehead par", "Ek taraf (One side)", "Poore sar mein", "Gardhan tak jaata hai")
-                        : List.of("Right side mein", "Left side mein", "Dono taraf", "Poore hisse mein");
-            } else {
-                res.nextQuestion = isHeadache
-                        ? "Where exactly is the headache located - on the forehead, one side, or all over?"
-                        : "Where exactly is this discomfort located?";
-                res.quickOptions = isHeadache
-                        ? List.of("Forehead", "One side of head", "All over head", "Radiates to neck")
-                        : List.of("Right side", "Left side", "Both sides", "Whole area");
-            }
-            return res;
-        }
-
-        // 4. Severity question: ONLY ask if severity is NOT yet known
-        if (!state.hasSeverityKnown()) {
-            if (isHi) {
-                res.nextQuestion = "0 से 10 के पैमाने पर दर्द या तकलीफ की तीव्रता कितनी है?";
-                res.quickOptions = List.of("हल्का दर्द (2-3)", "मध्यम दर्द (5-6)", "काफी तेज दर्द (7-8)", "असहनीय (9-10)");
-            } else if (isHinglish) {
-                res.nextQuestion = "0 se 10 ke scale par dard ya takleef kitni tez hai?";
-                res.quickOptions = List.of("Halka dard (2-3)", "Moderate (5-6)", "Kafi tez (7-8)", "Asahneey (9-10)");
-            } else {
-                res.nextQuestion = "On a scale of 0 to 10, how severe is the discomfort?";
-                res.quickOptions = List.of("Mild (2-3)", "Moderate (5-6)", "Severe (7-8)", "Intense (9-10)");
-            }
-            return res;
-        }
-
-        // 5. Aggravating / Relieving factors missing
-        if (!state.hasTriggerKnown() && state.getRelievingFactors() == null) {
-            if (isHi) {
-                res.nextQuestion = isHeadache
-                        ? "क्या तेज रोशनी, आवाज, तनाव या नींद की कमी से सिरदर्द बढ़ जाता है?"
-                        : "क्या किसी विशेष गतिविधि, चलने-फिरने या काम से यह तकलीफ बढ़ जाती है?";
-                res.quickOptions = isHeadache
-                        ? List.of("तेज रोशनी या आवाज से", "तनाव या स्क्रीन टाइम से", "नींद पूरी न होने से", "लगातार एक जैसा रहता है")
-                        : List.of("सीढ़ी चढ़ने पर अधिक", "चलने-फिरने पर अधिक", "रात में आराम करते समय", "लगातार एक जैसा रहता है");
-            } else if (isHinglish) {
-                res.nextQuestion = isHeadache
-                        ? "Kya tez light, aawaz, stress ya neend ki kami se headache badh jata hai?"
-                        : "Kya kisi specific kaam ya chalne-firne se yeh dard badh jata hai?";
-                res.quickOptions = isHeadache
-                        ? List.of("Tez light ya sound se", "Stress ya screen time se", "Neend ki kami se", "Lagatar ek jaisa")
-                        : List.of("Seedhi chadhte time", "Chalne-firne par", "Raat ko sote waqt", "Lagatar ek jaisa");
-            } else {
-                res.nextQuestion = isHeadache
-                        ? "Does bright light, loud sound, stress, or lack of sleep worsen the headache?"
-                        : "Does any specific movement, walking, or activity make the discomfort worse or better?";
-                res.quickOptions = isHeadache
-                        ? List.of("Bright light or sound", "Stress or screen time", "Lack of sleep", "Constant, no change")
-                        : List.of("Worse with stairs", "Worse walking", "Worse at night", "Constant pain");
-            }
-            return res;
-        }
-
-        // 6. Current medicines or medical history missing
-        if (state.getCurrentMedicines() == null && state.getPastMedicalHistory() == null) {
-            if (isHi) {
-                res.nextQuestion = "क्या आप इसके लिए कोई दवा ले रहे हैं या आपको पहले से कोई बीमारी (जैसे बीपी, शुगर) है?";
-                res.quickOptions = List.of("कोई दवा नहीं ले रहे", "दर्द / बुखार की दवा ली है", "डायबिटीज / बीपी की दवा चल रही है", "अन्य दवाएं");
-            } else if (isHinglish) {
-                res.nextQuestion = "Kya aap iske liye koi medicine le rahe hain ya pehle se koi bimari (jaise BP, Diabetes) hai?";
-                res.quickOptions = List.of("Koi medicine nahi", "Dawai li hai", "Diabetes / BP ki medicine", "Other medicines");
-            } else {
-                res.nextQuestion = "Are you taking any medications for this, or do you have any ongoing health conditions (like BP, diabetes)?";
-                res.quickOptions = List.of("No medications", "Taken medicine", "BP / Diabetes meds", "Other prescription");
-            }
-            return res;
-        }
-
-        // 7. AYUSH Agni (digestion)
-        if (state.getAyushAgni() == null) {
-            if (isHi) {
-                res.nextQuestion = "डॉक्टर के लिए आपकी दिनचर्या समझने हेतु: आपको भूख और पाचन कैसा रहता है?";
-                res.quickOptions = List.of("भूख में उतार-चढ़ाव / गैस", "तेज भूख / एसिडिटी", "धीमा पाचन / भारीपन", "सामान्य और संतुलित");
-            } else if (isHinglish) {
-                res.nextQuestion = "Doctor ke liye aapki daily routine samajhne ke liye: Aapki bhookh aur digestion kaisa rehta hai?";
-                res.quickOptions = List.of("Gas / Bloating rehti hai", "Tez bhookh / Acidity", "Dheema pachan / Bhari lagna", "Normal aur theek");
-            } else {
-                res.nextQuestion = "To help the doctor assess your digestion: How is your daily appetite and digestion?";
-                res.quickOptions = List.of("Variable / Gas & bloating", "Strong / Acidity", "Slow / Heaviness", "Normal balanced");
-            }
-            return res;
-        }
-
-        // 8. AYUSH Nidra (sleep)
-        if (state.getAyushNidra() == null) {
-            if (isHi) {
-                res.nextQuestion = "आपकी नींद कैसी रहती है - गहरी, बीच-बीच में टूटने वाली या कम आती है?";
-                res.quickOptions = List.of("गहरी और शांत नींद", "बीच-बीच में टूटती है", "नींद आने में कठिनाई", "कम नींद आती है");
-            } else if (isHinglish) {
-                res.nextQuestion = "Aapki sleep kaisi rehti hai - gehri, disturb hoti hai ya kam aati hai?";
-                res.quickOptions = List.of("Gehri aur achhi neend", "Baar-baar toot ti hai", "Neend mushkil se aati hai", "Kam aati hai");
-            } else {
-                res.nextQuestion = "How is your sleep - sound, easily disturbed, or do you struggle to fall asleep?";
-                res.quickOptions = List.of("Sound & restful", "Disturbed / waking up", "Trouble falling asleep", "Less sleep");
-            }
-            return res;
-        }
-
-        // 9. Otherwise complete!
-        res.isAssessmentComplete = true;
-        res.nextQuestion = getCompletionMessage(language);
+        selectNextMissingClinicalDimension(res, state, language);
         return res;
     }
 
-    private boolean isHeadacheComplaint(ClinicalInterviewState state) {
+    public boolean isHeadacheComplaint(ClinicalInterviewState state) {
         if (state == null) return false;
         String cc = state.getChiefComplaint() != null ? state.getChiefComplaint().toLowerCase(Locale.ROOT) : "";
         if (cc.contains("head") || cc.contains("sir") || cc.contains("sar") || cc.contains("matha") || cc.contains("माथ") || cc.contains("सिर") || cc.contains("सर")) {
@@ -1120,7 +1049,7 @@ public class AssessmentService {
         return false;
     }
 
-    private boolean isSubstantiallyIdentical(String q1, String q2) {
+    public boolean isSubstantiallyIdentical(String q1, String q2) {
         if (q1 == null || q2 == null) return false;
         String s1 = q1.replaceAll("[^a-zA-Z0-9\\u0900-\\u097F]", "").toLowerCase(Locale.ROOT);
         String s2 = q2.replaceAll("[^a-zA-Z0-9\\u0900-\\u097F]", "").toLowerCase(Locale.ROOT);
@@ -1133,25 +1062,253 @@ public class AssessmentService {
         return false;
     }
 
-    private void deduplicateQuestion(AiTurnResult res, ClinicalInterviewState state, String language, String lastAssistantQuestion) {
+    /**
+     * Deterministic Question Concept Detection (Multilingual: en, hi, hinglish)
+     */
+    public String detectQuestionConcept(String q) {
+        if (q == null || q.isBlank()) return "UNKNOWN";
+        String lower = q.toLowerCase(Locale.ROOT);
+
+        // 1. AYUSH Digestion (Agni)
+        if (lower.contains("bhookh") || lower.contains("pachan") || lower.contains("appetite") ||
+                lower.contains("digestion") || lower.contains("agni") || lower.contains("भूख") || lower.contains("पाचन") ||
+                lower.contains("अग्नि")) {
+            return "AYUSH_AGNI";
+        }
+
+        // 2. AYUSH Sleep (Nidra)
+        if (lower.contains("neend") || lower.contains("sleep") || lower.contains("nidra") ||
+                lower.contains("insomnia") || lower.contains("नींद") || lower.contains("निद्रा")) {
+            return "AYUSH_NIDRA";
+        }
+
+        // 3. AYUSH Elimination (Mala)
+        if (lower.contains("pet saaf") || lower.contains("bowel") || lower.contains("stool") ||
+                lower.contains("constipation") || lower.contains("kabz") || lower.contains("mala") ||
+                lower.contains("mutra") || lower.contains("dast") || lower.contains("शौच") || lower.contains("मल") || lower.contains("कब्ज")) {
+            return "AYUSH_MALA";
+        }
+
+        // 4. AYUSH Routine / Diet (Ahara/Vihara)
+        if (lower.contains("diet") || lower.contains("routine") || lower.contains("lifestyle") ||
+                lower.contains("physical activity") || lower.contains("exercise") || lower.contains("dincharaya") ||
+                lower.contains("dincharya") || lower.contains("din charya") || lower.contains("ahara") || lower.contains("vihara") ||
+                lower.contains("खानपान") || lower.contains("दिनचर्या") || lower.contains("आहार") || lower.contains("विहार")) {
+            return "AYUSH_AHARA_VIHARA";
+        }
+
+        // 5. Duration / Timeline
+        if (lower.contains("kab se") || lower.contains("how long") || lower.contains("kitne din") ||
+                lower.contains("kitne hafte") || lower.contains("kitne mahine") || lower.contains("kitne samay") ||
+                lower.contains("kitna time") || lower.contains("since when") || lower.contains("when did it start") ||
+                lower.contains("when did you") || lower.contains("duration") || lower.contains("onset") ||
+                lower.contains("कब से") || lower.contains("कितने दिन") || lower.contains("कितने समय") ||
+                lower.contains("कितने हफ्त") || lower.contains("कितना समय") || lower.contains("कब शुरू")) {
+            return "DURATION";
+        }
+
+        // 6. Severity / Intensity
+        if (lower.contains("scale") || lower.contains("1 se 10") || lower.contains("0 se 10") ||
+                lower.contains("1 to 10") || lower.contains("0 to 10") || lower.contains("kitna tez") ||
+                lower.contains("how severe") || lower.contains("severity") || lower.contains("intensity") ||
+                lower.contains("pain level") || lower.contains("rate your pain") || lower.contains("mild or severe") ||
+                lower.contains("kitna dard") || lower.contains("teevrata") || lower.contains("tivrata") ||
+                lower.contains("पैमाने पर") || lower.contains("तीव्रता") || lower.contains("कितना तेज") ||
+                lower.contains("0 से 10") || lower.contains("1 से 10")) {
+            return "SEVERITY";
+        }
+
+        // 7. Location
+        if (lower.contains("kahan") || lower.contains("kaha ") || lower.contains("kis jagah") ||
+                lower.contains("kis hisse") || lower.contains("kis taraf") || lower.contains("kis side") ||
+                lower.contains("kis ghutne") || lower.contains("where") || lower.contains("location") ||
+                lower.contains("which side") || lower.contains("which knee") || lower.contains("forehead") ||
+                lower.contains("radiat") || lower.contains("कहाँ") || lower.contains("कहा ") ||
+                lower.contains("किस जगह") || lower.contains("किस हिस्से") || lower.contains("किस तरफ") || lower.contains("माथे")) {
+            return "LOCATION";
+        }
+
+        // 8. Associated symptoms / Febrile accompanying
+        if (lower.contains("ke sath") || lower.contains("sath me") || lower.contains("aur koi lakshan") ||
+                lower.contains("thand") || lower.contains("kapkapi") || lower.contains("sore throat") ||
+                lower.contains("chills") || lower.contains("along with") || lower.contains("associated") ||
+                lower.contains("accompanied") || lower.contains("के साथ") || lower.contains("साथ में") ||
+                lower.contains("और कोई लक्षण") || lower.contains("ठंड") || lower.contains("कंपकंपी")) {
+            return "ASSOCIATED";
+        }
+
+        // 9. Relieving factors
+        if (lower.contains("aaram") || lower.contains("kam hota") || lower.contains("reliev") ||
+                lower.contains("better") || lower.contains("makes it better") || lower.contains("what helps") ||
+                lower.contains("आराम मिलता") || lower.contains("कम होता")) {
+            return "RELIEVING";
+        }
+
+        // 10. Triggers / Aggravating factors
+        if (lower.contains("badhta") || lower.contains("badh jata") || lower.contains("chalne se") ||
+                lower.contains("seedhi") || lower.contains("worsen") || lower.contains("aggravat") ||
+                lower.contains("make it worse") || lower.contains("makes it worse") || lower.contains("trigger") ||
+                lower.contains("बढ़ जाता") || lower.contains("बढ़ती") || lower.contains("चलने-फिरने से")) {
+            return "TRIGGER";
+        }
+
+        // 11. Character of pain
+        if (lower.contains("kaisa dard") || lower.contains("chubhan") || lower.contains("jalan") ||
+                lower.contains("sharp") || lower.contains("dull") || lower.contains("throbbing") ||
+                lower.contains("burning") || lower.contains("stabbing") || lower.contains("what kind of pain") ||
+                lower.contains("कैसा दर्द") || lower.contains("चुभन") || lower.contains("जलन")) {
+            return "CHARACTER";
+        }
+
+        // 12. Medical history / Current meds
+        if (lower.contains("dawai") || lower.contains("dawa") || lower.contains("medicine") ||
+                lower.contains("medication") || lower.contains("pehle se koi") || lower.contains("ongoing health") ||
+                lower.contains("diabetes") || lower.contains("blood pressure") || lower.contains("bp") ||
+                lower.contains("दवा") || lower.contains("दवाई") || lower.contains("पहले से कोई बीमारी")) {
+            return "HISTORY_MEDS";
+        }
+
+        // 13. Allergies
+        if (lower.contains("allergy") || lower.contains("allergies") || lower.contains("allergic") || lower.contains("एलर्जी")) {
+            return "ALLERGIES";
+        }
+
+        return "UNKNOWN";
+    }
+
+    public boolean isConceptAlreadyAnswered(ClinicalInterviewState state, String concept) {
+        if (state == null || concept == null || "UNKNOWN".equals(concept)) return false;
+        return switch (concept) {
+            case "DURATION" -> state.hasDurationKnown() || state.isFieldAnswered("DURATION");
+            case "SEVERITY" -> state.hasSeverityKnown() || state.isFieldAnswered("SEVERITY");
+            case "LOCATION" -> state.hasLocationKnown() || state.isFieldAnswered("LOCATION");
+            case "TRIGGER" -> state.hasTriggerKnown() || state.isFieldAnswered("TRIGGER");
+            case "RELIEVING" -> (state.getRelievingFactors() != null && !state.getRelievingFactors().isBlank()) || state.isFieldAnswered("RELIEVING");
+            case "CHARACTER" -> (state.getCharacter() != null && !state.getCharacter().isBlank()) || state.isFieldAnswered("CHARACTER");
+            case "ASSOCIATED" -> (state.getAssociatedSymptoms() != null && !state.getAssociatedSymptoms().isBlank()) || state.isFieldAnswered("ASSOCIATED");
+            case "HISTORY_MEDS" -> ((state.getCurrentMedicines() != null && !state.getCurrentMedicines().isBlank())
+                    || (state.getPastMedicalHistory() != null && !state.getPastMedicalHistory().isBlank())
+                    || state.isDimensionAddressed("MEDICAL_HISTORY")
+                    || state.isFieldAnswered("HISTORY_MEDS"));
+            case "ALLERGIES" -> (state.getAllergies() != null && !state.getAllergies().isBlank()) || state.isFieldAnswered("ALLERGIES");
+            case "AYUSH_AGNI" -> state.hasAgniKnown() || state.isFieldAnswered("AYUSH_AGNI");
+            case "AYUSH_NIDRA" -> state.hasNidraKnown() || state.isFieldAnswered("AYUSH_NIDRA");
+            case "AYUSH_MALA" -> state.hasMalaKnown() || state.isFieldAnswered("AYUSH_MALA");
+            case "AYUSH_AHARA_VIHARA" -> state.hasAharaViharaKnown() || state.isFieldAnswered("AYUSH_AHARA_VIHARA");
+            default -> false;
+        };
+    }
+
+    /**
+     * QUESTION VALIDATION GATE: Deterministically checks Gemini's candidate question against clinical state.
+     * If the requested information is already known or duplicate, REJECTS it and substitutes the next missing dimension.
+     */
+    public void validateAndFilterCandidateQuestion(ClinicalInterviewState state,
+                                                   AiTurnResult aiResult,
+                                                   String language,
+                                                   String lastAssistantQuestion) {
+        state.syncAnsweredFields();
+        if (aiResult == null) return;
+
+        if (aiResult.isAssessmentComplete) {
+            return;
+        }
+
+        String candidate = aiResult.nextQuestion != null ? aiResult.nextQuestion.trim() : "";
+        String concept = detectQuestionConcept(candidate);
+
+        boolean alreadyAnswered = isConceptAlreadyAnswered(state, concept);
+        boolean repeatedQuestion = false;
+
+        // Check against last assistant question
+        if (lastAssistantQuestion != null && !lastAssistantQuestion.isBlank()) {
+            if (isSubstantiallyIdentical(candidate, lastAssistantQuestion)) {
+                repeatedQuestion = true;
+            }
+        }
+
+        // Check against whole question history
+        if (!repeatedQuestion && state.getQuestionHistory() != null) {
+            for (String pastQ : state.getQuestionHistory()) {
+                if (isSubstantiallyIdentical(candidate, pastQ)) {
+                    repeatedQuestion = true;
+                    break;
+                }
+            }
+        }
+
+        if (alreadyAnswered || repeatedQuestion || candidate.isBlank()) {
+            logger.info("[AI DEBUG] REJECTED candidate question=\"{}\" [concept={}] (alreadyAnswered={}, repeatedQuestion={}). Substituting next unanswered clinical dimension.",
+                    candidate, concept, alreadyAnswered, repeatedQuestion);
+
+            selectNextMissingClinicalDimension(aiResult, state, language);
+
+            String chosenConcept = detectQuestionConcept(aiResult.nextQuestion);
+            logger.info("[AI DEBUG] SUBSTITUTED nextQuestion=\"{}\" [concept={}]", aiResult.nextQuestion, chosenConcept);
+            if (!aiResult.isAssessmentComplete) {
+                state.recordQuestion(chosenConcept, aiResult.nextQuestion, now());
+            }
+        } else {
+            logger.info("[AI DEBUG] ACCEPTED candidate question=\"{}\" [concept={}]", candidate, concept);
+            if (!aiResult.isAssessmentComplete) {
+                state.recordQuestion(concept, candidate, now());
+            }
+            if (aiResult.quickOptions == null || aiResult.quickOptions.isEmpty()) {
+                aiResult.quickOptions = getDefaultOptionsForConcept(concept, language, state);
+            }
+        }
+    }
+
+    /**
+     * Selects the next clinically appropriate unanswered dimension based on state
+     */
+    public void selectNextMissingClinicalDimension(AiTurnResult res, ClinicalInterviewState state, String language) {
         boolean isHi = "hi".equalsIgnoreCase(language);
         boolean isHinglish = "hinglish".equalsIgnoreCase(language);
         boolean isHeadache = isHeadacheComplaint(state);
 
-        // Sequence through missing dimensions
-        if (!state.hasLocationKnown()) {
+        // 1. Duration / Timeline
+        if (!state.hasDurationKnown() && !state.isFieldAnswered("DURATION")) {
+            res.nextQuestion = isHi
+                    ? "समझ गया। यह परेशानी आपको कब से हो रही है?"
+                    : (isHinglish ? "Samajh gaya. Yeh pareshani aapko kab se ho rahi hai?"
+                    : "Got it. How long have you been experiencing this issue?");
+            res.quickOptions = isHi
+                    ? List.of("1-2 दिनों से", "लगभग 1-2 हफ्ते से", "1 महीने से अधिक", "आज ही शुरू हुआ")
+                    : (isHinglish ? List.of("1-2 din se", "Lagbhag 1-2 hafte se", "1 mahine se zyada", "Aaj hi shuru hua")
+                    : List.of("1-2 days", "About 1-2 weeks", "Over a month", "Just started today"));
+            return;
+        }
+
+        // 2. Associated respiratory/febrile symptoms
+        boolean isFebrileOrResp = hasFebrileOrRespiratorySymptom(state);
+        if (isFebrileOrResp && (state.getAssociatedSymptoms() == null || state.getAssociatedSymptoms().isBlank()) && !state.isFieldAnswered("ASSOCIATED")) {
+            res.nextQuestion = isHi
+                    ? "समझ गया। क्या बुखार के साथ ठंड, कंपकंपी या गले में दर्द/खराश भी महसूस हो रही है?"
+                    : (isHinglish ? "Samajh gaya. Kya bukhar ke sath thand, kapkapi ya gale mein dard/kharash bhi ho rahi hai?"
+                    : "Understood. Are you experiencing chills, shivering, or a sore throat along with the fever?");
+            res.quickOptions = isHi
+                    ? List.of("ठंड / कंपकंपी लगती है", "गले में दर्द / खराश है", "शरीर में दर्द / कमजोरी", "केवल बुखार और जुकाम है")
+                    : (isHinglish ? List.of("Thand / Kapkapi lagti hai", "Gale mein dard hai", "Body ache / Kamzori hai", "Sirf bukhar aur sardi hai")
+                    : List.of("Chills / shivering", "Sore throat", "Body ache / fatigue", "Only fever & cold"));
+            return;
+        }
+
+        // 3. Location
+        if (!state.hasLocationKnown() && !state.isFieldAnswered("LOCATION")) {
             res.nextQuestion = isHi
                     ? (isHeadache ? "यह सिरदर्द विशेष रूप से किस जगह पर है - माथे पर, सिर के एक तरफ या पूरे सिर में?" : "तकलीफ शरीर के किस हिस्से में सबसे ज्यादा महसूस हो रही है?")
                     : (isHinglish ? (isHeadache ? "Yeh headache exactly kahan ho raha hai - forehead par, ek taraf ya poore sar mein?" : "Yeh takleef shareer ke kis hisse mein sabse zyada ho rahi hai?")
                     : (isHeadache ? "Where exactly is the headache located - on the forehead, one side, or all over?" : "Where exactly is this discomfort located?"));
             res.quickOptions = isHi
-                    ? (isHeadache ? List.of("माथे पर (Forehead)", "सिर के एक तरफ (One side)", "पूरे सिर में (All over)", "गर्दन तक जाता है") : List.of("दाहिनी तरफ", "बाईं तरफ", "दोनों तरफ", "पूरे हिस्से में"))
+                    ? (isHeadache ? List.of("माथे पर (Forehead)", "सिर के एक तरफ (One side)", "पूरे सिर में (All over)", "गर्दन तक जाता है") : List.of("दाहिनी तरफ (Right)", "बाईं तरफ (Left)", "दोनों तरफ (Both)", "पूरे हिस्से में"))
                     : (isHinglish ? (isHeadache ? List.of("Forehead par", "Ek taraf (One side)", "Poore sar mein", "Gardhan tak jaata hai") : List.of("Right side mein", "Left side mein", "Dono taraf", "Poore hisse mein"))
                     : (isHeadache ? List.of("Forehead", "One side of head", "All over head", "Radiates to neck") : List.of("Right side", "Left side", "Both sides", "Whole area")));
-            if (!isSubstantiallyIdentical(res.nextQuestion, lastAssistantQuestion)) return;
+            return;
         }
 
-        if (!state.hasSeverityKnown()) {
+        // 4. Severity
+        if (!state.hasSeverityKnown() && !state.isFieldAnswered("SEVERITY")) {
             res.nextQuestion = isHi
                     ? "0 से 10 के पैमाने पर दर्द या तकलीफ की तीव्रता कितनी है?"
                     : (isHinglish ? "0 se 10 ke scale par dard ya takleef kitni tez hai?"
@@ -1160,46 +1317,50 @@ public class AssessmentService {
                     ? List.of("हल्का दर्द (2-3)", "मध्यम दर्द (5-6)", "काफी तेज दर्द (7-8)", "असहनीय (9-10)")
                     : (isHinglish ? List.of("Halka dard (2-3)", "Moderate (5-6)", "Kafi tez (7-8)", "Asahneey (9-10)")
                     : List.of("Mild (2-3)", "Moderate (5-6)", "Severe (7-8)", "Intense (9-10)"));
-            if (!isSubstantiallyIdentical(res.nextQuestion, lastAssistantQuestion)) return;
+            return;
         }
 
-        if (!state.hasTriggerKnown() && state.getRelievingFactors() == null) {
+        // 5. Triggers / Aggravating factors
+        if (!state.hasTriggerKnown() && (state.getRelievingFactors() == null || state.getRelievingFactors().isBlank()) && !state.isFieldAnswered("TRIGGER")) {
             res.nextQuestion = isHi
-                    ? (isHeadache ? "क्या तेज रोशनी, आवाज, तनाव या नींद की कमी से सिरदर्द बढ़ जाता है?" : "क्या किसी विशेष गतिविधि या चलने-फिरने से तकलीफ बढ़ती है?")
-                    : (isHinglish ? (isHeadache ? "Kya tez light, aawaz, stress ya neend ki kami se headache badh jata hai?" : "Kya kisi specific movement ya walk karne se dard badh jata hai?")
-                    : (isHeadache ? "Does bright light, loud sound, stress, or lack of sleep worsen the headache?" : "Does any specific movement, activity, or walking worsen the discomfort?"));
+                    ? (isHeadache ? "क्या तेज रोशनी, आवाज, तनाव या नींद की कमी से सिरदर्द बढ़ जाता है?" : "क्या किसी विशेष गतिविधि, चलने-फिरने या काम से यह तकलीफ बढ़ जाती है?")
+                    : (isHinglish ? (isHeadache ? "Kya tez light, aawaz, stress ya neend ki kami se headache badh jata hai?" : "Kya kisi specific kaam ya chalne-firne se yeh dard badh jata hai?")
+                    : (isHeadache ? "Does bright light, loud sound, stress, or lack of sleep worsen the headache?" : "Does any specific movement, walking, or activity make the discomfort worse?"));
             res.quickOptions = isHi
-                    ? (isHeadache ? List.of("तेज रोशनी या आवाज से", "तनाव या स्क्रीन टाइम से", "नींद पूरी न होने से", "लगातार एक जैसा रहता है") : List.of("चलने-फिरने पर अधिक", "सीढ़ी चढ़ने पर", "रात को सोते समय", "लगातार एक जैसा"))
-                    : (isHinglish ? (isHeadache ? List.of("Tez light ya sound se", "Stress ya screen time se", "Neend ki kami se", "Lagatar ek jaisa") : List.of("Chalne-firne par", "Seedhi chadhte waqt", "Raat ko sote waqt", "Lagatar ek jaisa"))
-                    : (isHeadache ? List.of("Bright light or sound", "Stress or screen time", "Lack of sleep", "Constant pain") : List.of("Walking / movement", "Stairs", "At night", "Constant pain")));
-            if (!isSubstantiallyIdentical(res.nextQuestion, lastAssistantQuestion)) return;
+                    ? (isHeadache ? List.of("तेज रोशनी या आवाज से", "तनाव या स्क्रीन टाइम से", "नींद पूरी न होने से", "लगातार एक जैसा रहता है") : List.of("सीढ़ी चढ़ने पर अधिक", "चलने-फिरने पर अधिक", "रात में आराम करते समय", "लगातार एक जैसा रहता है"))
+                    : (isHinglish ? (isHeadache ? List.of("Tez light ya sound se", "Stress ya screen time se", "Neend ki kami se", "Lagatar ek jaisa") : List.of("Seedhi chadhte time", "Chalne-firne par", "Raat ko sote waqt", "Lagatar ek jaisa"))
+                    : (isHeadache ? List.of("Bright light or sound", "Stress or screen time", "Lack of sleep", "Constant, no change") : List.of("Worse with stairs", "Worse walking", "Worse at night", "Constant pain")));
+            return;
         }
 
-        if (state.getCurrentMedicines() == null && state.getPastMedicalHistory() == null) {
+        // 6. Medical History / Current Meds
+        if (state.getCurrentMedicines() == null && state.getPastMedicalHistory() == null && !state.isDimensionAddressed("MEDICAL_HISTORY") && !state.isFieldAnswered("HISTORY_MEDS")) {
             res.nextQuestion = isHi
-                    ? "क्या आप इसके लिए कोई दवा ले रहे हैं या पहले से कोई बीमारी (जैसे बीपी, शुगर) है?"
+                    ? "क्या आप इसके लिए कोई दवा ले रहे हैं या आपको पहले से कोई बीमारी (जैसे बीपी, शुगर) है?"
                     : (isHinglish ? "Kya aap iske liye koi medicine le rahe hain ya pehle se koi bimari (jaise BP, Diabetes) hai?"
                     : "Are you taking any medications for this, or do you have any ongoing health conditions (like BP, diabetes)?");
             res.quickOptions = isHi
-                    ? List.of("कोई दवा नहीं ले रहे", "दर्द की दवा ली है", "बीपी / शुगर की दवा चल रही है", "अन्य दवाएं")
-                    : (isHinglish ? List.of("Koi medicine nahi", "Painkiller li hai", "Diabetes / BP ki medicine", "Other medicines")
-                    : List.of("No medications", "Taken pain relief", "BP / Diabetes meds", "Other prescription"));
-            if (!isSubstantiallyIdentical(res.nextQuestion, lastAssistantQuestion)) return;
+                    ? List.of("कोई दवा नहीं ले रहे", "दर्द / बुखार की दवा ली है", "डायबिटीज / बीपी की दवा चल रही है", "अन्य दवाएं")
+                    : (isHinglish ? List.of("Koi medicine nahi", "Dawai li hai", "Diabetes / BP ki medicine", "Other medicines")
+                    : List.of("No medications", "Taken medicine", "BP / Diabetes meds", "Other prescription"));
+            return;
         }
 
-        if (state.getAyushAgni() == null) {
+        // 7. AYUSH Agni (Digestion)
+        if (!state.hasAgniKnown() && !state.isFieldAnswered("AYUSH_AGNI")) {
             res.nextQuestion = isHi
                     ? "डॉक्टर के लिए आपकी दिनचर्या समझने हेतु: आपको भूख और पाचन कैसा रहता है?"
-                    : (isHinglish ? "Doctor ke liye aapki routine samajhne ke liye: Aapki bhookh aur digestion kaisa rehta hai?"
+                    : (isHinglish ? "Doctor ke liye aapki daily routine samajhne ke liye: Aapki bhookh aur digestion kaisa rehta hai?"
                     : "To help the doctor assess your digestion: How is your daily appetite and digestion?");
             res.quickOptions = isHi
                     ? List.of("भूख में उतार-चढ़ाव / गैस", "तेज भूख / एसिडिटी", "धीमा पाचन / भारीपन", "सामान्य और संतुलित")
                     : (isHinglish ? List.of("Gas / Bloating rehti hai", "Tez bhookh / Acidity", "Dheema pachan / Bhari lagna", "Normal aur theek")
                     : List.of("Variable / Gas & bloating", "Strong / Acidity", "Slow / Heaviness", "Normal balanced"));
-            if (!isSubstantiallyIdentical(res.nextQuestion, lastAssistantQuestion)) return;
+            return;
         }
 
-        if (state.getAyushNidra() == null) {
+        // 8. AYUSH Nidra (Sleep)
+        if (!state.hasNidraKnown() && !state.isFieldAnswered("AYUSH_NIDRA")) {
             res.nextQuestion = isHi
                     ? "आपकी नींद कैसी रहती है - गहरी, बीच-बीच में टूटने वाली या कम आती है?"
                     : (isHinglish ? "Aapki sleep kaisi rehti hai - gehri, disturb hoti hai ya kam aati hai?"
@@ -1208,13 +1369,92 @@ public class AssessmentService {
                     ? List.of("गहरी और शांत नींद", "बीच-बीच में टूटती है", "नींद आने में कठिनाई", "कम नींद आती है")
                     : (isHinglish ? List.of("Gehri aur achhi neend", "Baar-baar toot ti hai", "Neend mushkil se aati hai", "Kam aati hai")
                     : List.of("Sound & restful", "Disturbed / waking up", "Trouble falling asleep", "Less sleep"));
-            if (!isSubstantiallyIdentical(res.nextQuestion, lastAssistantQuestion)) return;
+            return;
+        }
+
+        // 9. AYUSH Mala (Elimination)
+        if (!state.hasMalaKnown() && !state.isFieldAnswered("AYUSH_MALA")) {
+            res.nextQuestion = isHi
+                    ? "पेट साफ होने और बाउल मूवमेंट्स की स्थिति कैसी रहती है - नियमित या कब्ज रहता है?"
+                    : (isHinglish ? "Pet saaf hone aur bowel movements ka routine kaisa rehta hai - regular ya constipation?"
+                    : "How are your bowel movements usually - regular, or do you experience constipation or irregularity?");
+            res.quickOptions = isHi
+                    ? List.of("नियमित और साफ", "कब्ज / अनियमित", "दस्त / बार-बार जाना", "गैस और भारीपन")
+                    : (isHinglish ? List.of("Regular aur theek", "Kabz / Irregular", "Loose motion / Bar-bar", "Gas aur heaviness")
+                    : List.of("Regular & clear", "Constipation / irregular", "Loose / frequent", "Gas & bloating"));
+            return;
+        }
+
+        // 10. AYUSH Ahara / Vihara (Diet & Routine)
+        if (!state.hasAharaViharaKnown() && !state.isFieldAnswered("AYUSH_AHARA_VIHARA")) {
+            res.nextQuestion = isHi
+                    ? "आपकी सामान्य डाइट और दिनचर्या कैसी रहती है - समय पर भोजन और शारीरिक गतिविधि का रूटीन कैसा है?"
+                    : (isHinglish ? "Aapki daily diet aur routine kaisa rehta hai - meals time par rehte hain ya physical activity kaisi hai?"
+                    : "How would you describe your usual diet and daily physical activity routine?");
+            res.quickOptions = isHi
+                    ? List.of("संतुलित भोजन व सक्रिय", "अनियमित भोजन / हल्का व्यायाम", "तला-भुना / गतिहीन (Desk job)", "सादा घर का भोजन")
+                    : (isHinglish ? List.of("Balanced food & active", "Irregular meals / light active", "Oily/spicy / desk job", "Simple home food")
+                    : List.of("Balanced & active", "Irregular meals / light activity", "Sedentary / desk job", "Simple home meals"));
+            return;
         }
 
         // Complete intake
         res.isAssessmentComplete = true;
         res.nextQuestion = getCompletionMessage(language);
         res.quickOptions = Collections.emptyList();
+    }
+
+    public List<String> getDefaultOptionsForConcept(String concept, String language, ClinicalInterviewState state) {
+        boolean isHi = "hi".equalsIgnoreCase(language);
+        boolean isHinglish = "hinglish".equalsIgnoreCase(language);
+        boolean isHeadache = isHeadacheComplaint(state);
+
+        return switch (concept) {
+            case "DURATION" -> isHi
+                    ? List.of("1-2 दिनों से", "लगभग 1-2 हफ्ते से", "1 महीने से अधिक", "आज ही शुरू हुआ")
+                    : (isHinglish ? List.of("1-2 din se", "Lagbhag 1-2 hafte se", "1 mahine se zyada", "Aaj hi shuru hua")
+                    : List.of("1-2 days", "About 1-2 weeks", "Over a month", "Just started today"));
+            case "SEVERITY" -> isHi
+                    ? List.of("हल्का दर्द (2-3)", "मध्यम दर्द (5-6)", "काफी तेज दर्द (7-8)", "असहनीय (9-10)")
+                    : (isHinglish ? List.of("Halka dard (2-3)", "Moderate (5-6)", "Kafi tez (7-8)", "Asahneey (9-10)")
+                    : List.of("Mild (2-3)", "Moderate (5-6)", "Severe (7-8)", "Intense (9-10)"));
+            case "LOCATION" -> isHi
+                    ? (isHeadache ? List.of("माथे पर (Forehead)", "सिर के एक तरफ (One side)", "पूरे सिर में (All over)", "गर्दन तक जाता है") : List.of("दाहिनी तरफ (Right)", "बाईं तरफ (Left)", "दोनों तरफ (Both)", "पूरे हिस्से में"))
+                    : (isHinglish ? (isHeadache ? List.of("Forehead par", "Ek taraf (One side)", "Poore sar mein", "Gardhan tak jaata hai") : List.of("Right side mein", "Left side mein", "Dono taraf", "Poore hisse mein"))
+                    : (isHeadache ? List.of("Forehead", "One side of head", "All over head", "Radiates to neck") : List.of("Right side", "Left side", "Both sides", "Whole area")));
+            case "TRIGGER" -> isHi
+                    ? (isHeadache ? List.of("तेज रोशनी या आवाज से", "तनाव या स्क्रीन टाइम से", "नींद पूरी न होने से", "लगातार एक जैसा रहता है") : List.of("सीढ़ी चढ़ने पर अधिक", "चलने-फिरने पर अधिक", "रात में आराम करते समय", "लगातार एक जैसा रहता है"))
+                    : (isHinglish ? (isHeadache ? List.of("Tez light ya sound se", "Stress ya screen time se", "Neend ki kami se", "Lagatar ek jaisa") : List.of("Seedhi chadhte time", "Chalne-firne par", "Raat ko sote waqt", "Lagatar ek jaisa"))
+                    : (isHeadache ? List.of("Bright light or sound", "Stress or screen time", "Lack of sleep", "Constant, no change") : List.of("Worse with stairs", "Worse walking", "Worse at night", "Constant pain")));
+            case "ASSOCIATED" -> isHi
+                    ? List.of("ठंड / कंपकंपी लगती है", "गले में दर्द / खराश है", "शरीर में दर्द / कमजोरी", "केवल बुखार और जुकाम है")
+                    : (isHinglish ? List.of("Thand / Kapkapi lagti hai", "Gale mein dard hai", "Body ache / Kamzori hai", "Sirf bukhar aur sardi hai")
+                    : List.of("Chills / shivering", "Sore throat", "Body ache / fatigue", "Only fever & cold"));
+            case "HISTORY_MEDS" -> isHi
+                    ? List.of("कोई दवा नहीं ले रहे", "दर्द / बुखार की दवा ली है", "डायबिटीज / बीपी की दवा चल रही है", "अन्य दवाएं")
+                    : (isHinglish ? List.of("Koi medicine nahi", "Dawai li hai", "Diabetes / BP ki medicine", "Other medicines")
+                    : List.of("No medications", "Taken medicine", "BP / Diabetes meds", "Other prescription"));
+            case "AYUSH_AGNI" -> isHi
+                    ? List.of("भूख में उतार-चढ़ाव / गैस", "तेज भूख / एसिडिटी", "धीमा पाचन / भारीपन", "सामान्य और संतुलित")
+                    : (isHinglish ? List.of("Gas / Bloating rehti hai", "Tez bhookh / Acidity", "Dheema pachan / Bhari lagna", "Normal aur theek")
+                    : List.of("Variable / Gas & bloating", "Strong / Acidity", "Slow / Heaviness", "Normal balanced"));
+            case "AYUSH_NIDRA" -> isHi
+                    ? List.of("गहरी और शांत नींद", "बीच-बीच में टूटती है", "नींद आने में कठिनाई", "कम नींद आती है")
+                    : (isHinglish ? List.of("Gehri aur achhi neend", "Baar-baar toot ti hai", "Neend mushkil se aati hai", "Kam aati hai")
+                    : List.of("Sound & restful", "Disturbed / waking up", "Trouble falling asleep", "Less sleep"));
+            case "AYUSH_MALA" -> isHi
+                    ? List.of("नियमित और साफ", "कब्ज / अनियमित", "दस्त / बार-बार जाना", "गैस और भारीपन")
+                    : (isHinglish ? List.of("Regular aur theek", "Kabz / Irregular", "Loose motion / Bar-bar", "Gas aur heaviness")
+                    : List.of("Regular & clear", "Constipation / irregular", "Loose / frequent", "Gas & bloating"));
+            case "AYUSH_AHARA_VIHARA" -> isHi
+                    ? List.of("संतुलित भोजन व सक्रिय", "अनियमित भोजन / हल्का व्यायाम", "तला-भुना / गतिहीन (Desk job)", "सादा घर का भोजन")
+                    : (isHinglish ? List.of("Balanced food & active", "Irregular meals / light active", "Oily/spicy / desk job", "Simple home food")
+                    : List.of("Balanced & active", "Irregular meals / light activity", "Sedentary / desk job", "Simple home meals"));
+            default -> isHi
+                    ? List.of("हाँ", "नहीं", "पता नहीं")
+                    : (isHinglish ? List.of("Haan", "Nahi", "Pata nahi")
+                    : List.of("Yes", "No", "Not sure"));
+        };
     }
 
     /**
@@ -1232,23 +1472,25 @@ public class AssessmentService {
         sb.append("MediKiosk AI Intake Preparation for Attending Physician\n");
         sb.append("==================================================\n\n");
 
-        sb.append("PATIENT DEMOGRAPHICS:\n");
-        sb.append("Name: ").append(valOr(patient.getName(), "Patient")).append(" | ");
-        sb.append("Age: ").append(patient.getAge() != null ? patient.getAge() + " yrs" : "Not reported").append(" | ");
-        sb.append("Gender: ").append(valOr(patient.getGender(), "Not reported")).append(" | ");
-        sb.append("Phone: ").append(valOr(patient.getPhone(), "Recorded")).append("\n\n");
+        // 1. PATIENT OVERVIEW
+        sb.append("1. PATIENT OVERVIEW:\n");
+        sb.append("- Name: ").append(valOr(patient.getName(), "Patient")).append("\n");
+        sb.append("- Age: ").append(patient.getAge() != null ? patient.getAge() + " years" : "Not reported").append("\n");
+        sb.append("- Gender: ").append(valOr(patient.getGender(), "Not reported")).append("\n");
+        sb.append("- Case ID: MK-").append(String.format("%04d", c.getId())).append("\n");
+        sb.append("- Phone: ").append(valOr(patient.getPhone(), "Recorded")).append("\n\n");
 
-        // 1. Chief Complaint
-        sb.append("1. CHIEF COMPLAINT:\n");
-        sb.append(valOr(state.getChiefComplaint(), valOr(c.getChiefComplaint(), "Not reported"))).append("\n\n");
+        // 2. CHIEF COMPLAINT
+        sb.append("2. CHIEF COMPLAINT:\n");
+        sb.append("- Primary Concern: ").append(valOr(state.getChiefComplaint(), valOr(c.getChiefComplaint(), "Not reported"))).append("\n");
+        sb.append("- Duration: ").append(valOr(state.getDuration(), "Not reported")).append("\n\n");
 
-        // 2. History of Present Illness (HPI)
-        sb.append("2. HISTORY OF PRESENT ILLNESS (HPI):\n");
-        sb.append("- Onset/Duration: ").append(valOr(state.getDuration(), "Not reported")).append("\n");
-        sb.append("- Location: ").append(valOr(state.getLocation(), "Not reported")).append("\n");
+        // 3. HISTORY OF PRESENT ILLNESS (HPI)
+        sb.append("3. HISTORY OF PRESENT ILLNESS (HPI):\n");
+        sb.append("- Onset & Duration: ").append(valOr(state.getDuration(), "Not reported")).append("\n");
+        sb.append("- Anatomical Location: ").append(valOr(state.getLocation(), "Not reported")).append("\n");
         sb.append("- Severity: ").append(valOr(state.getSeverity(), "Not reported")).append("\n");
-        sb.append("- Character/Nature: ").append(valOr(state.getCharacter(), "Not reported")).append("\n");
-        sb.append("- Timing/Pattern: ").append(valOr(state.getTiming(), "Not reported")).append("\n");
+        sb.append("- Character / Nature: ").append(valOr(state.getCharacter(), "Not reported")).append("\n");
         sb.append("- Aggravating Factors: ").append(valOr(state.getAggravatingFactors(), "Not reported")).append("\n");
         sb.append("- Relieving Factors: ").append(valOr(state.getRelievingFactors(), "Not reported")).append("\n");
         if (!state.getPertinentNegatives().isEmpty()) {
@@ -1258,83 +1500,102 @@ public class AssessmentService {
         }
         sb.append("\n");
 
-        // 3. Associated Symptoms
-        sb.append("3. ASSOCIATED SYMPTOMS:\n");
+        // 4. ASSOCIATED SYMPTOMS
+        sb.append("4. ASSOCIATED SYMPTOMS:\n");
         sb.append(valOr(state.getAssociatedSymptoms(), "Not reported")).append("\n\n");
 
-        // 4. Relevant Medical History
-        sb.append("4. RELEVANT MEDICAL HISTORY:\n");
+        // 5. MEDICAL HISTORY
+        sb.append("5. MEDICAL HISTORY:\n");
         sb.append(valOr(state.getPastMedicalHistory(), "Not reported")).append("\n\n");
 
-        // 5. Surgical History
-        sb.append("5. SURGICAL HISTORY:\n");
+        // 6. SURGICAL HISTORY
+        sb.append("6. SURGICAL HISTORY:\n");
         sb.append(valOr(state.getPastSurgicalHistory(), "Not reported")).append("\n\n");
 
-        // 6. Current Medicines
-        sb.append("6. CURRENT MEDICINES:\n");
+        // 7. CURRENT MEDICATIONS
+        sb.append("7. CURRENT MEDICATIONS:\n");
         sb.append(valOr(state.getCurrentMedicines(), "Not reported")).append("\n\n");
 
-        // 7. Allergies
-        sb.append("7. ALLERGIES:\n");
+        // 8. ALLERGIES
+        sb.append("8. ALLERGIES:\n");
         sb.append(valOr(state.getAllergies(), "Not reported")).append("\n\n");
 
-        // 8. Family History
-        sb.append("8. FAMILY HISTORY:\n");
+        // 9. FAMILY HISTORY
+        sb.append("9. FAMILY HISTORY:\n");
         sb.append(valOr(state.getFamilyHistory(), "Not reported")).append("\n\n");
 
-        // 9. Personal/Lifestyle History
-        sb.append("9. PERSONAL / LIFESTYLE HISTORY:\n");
+        // 10. PERSONAL / LIFESTYLE HISTORY
+        sb.append("10. PERSONAL / LIFESTYLE HISTORY:\n");
         sb.append(valOr(state.getPersonalLifestyle(), "Not reported")).append("\n\n");
 
-        // 10. AYUSH Profile
-        sb.append("10. AYUSH PROFILE:\n");
+        // 11. AYUSH PROFILE
+        sb.append("11. AYUSH PROFILE:\n");
         sb.append("- Agni (Metabolism/Digestion): ").append(valOr(ayush.get("agni"), valOr(state.getAyushAgni(), "Not reported"))).append("\n");
         sb.append("- Nidra (Sleep Pattern): ").append(valOr(ayush.get("nidra"), valOr(state.getAyushNidra(), "Not reported"))).append("\n");
         sb.append("- Mala (Elimination): ").append(valOr(ayush.get("mala"), valOr(state.getAyushMala(), "Not reported"))).append("\n");
-        sb.append("- Rule-Based Prakriti Tendency: ").append(dominant).append("\n\n");
+        sb.append("- Ahara & Vihara (Diet & Routine): ").append(valOr(ayush.get("aharaVihara"), valOr(state.getAyushAharaVihara(), "Not reported"))).append("\n");
+        sb.append("- Rule-Based Prakriti Tendency: ").append(dominant).append("\n");
+        sb.append("- Note: Preliminary wellness constitution indicator — not a clinical diagnosis.\n\n");
 
-        // 11. Previous Documents / Investigations
-        sb.append("11. PREVIOUS DOCUMENTS / INVESTIGATIONS:\n");
+        // 12. PREVIOUS REPORTS / INVESTIGATIONS
+        sb.append("12. PREVIOUS REPORTS / INVESTIGATIONS:\n");
         if (c.getDocuments() != null && !c.getDocuments().isBlank() && !c.getDocuments().equals("[]")) {
-            sb.append("Attached patient records registered in system.\n\n");
+            sb.append("Attached patient records registered in system for review.\n\n");
         } else {
-            sb.append("No prior documents attached yet (pending upload step).\n\n");
+            sb.append("No previous records attached.\n\n");
         }
 
-        // 12. Red Flags
-        sb.append("12. RED FLAGS:\n");
+        // 13. RED FLAGS
+        sb.append("13. RED FLAGS:\n");
         if (c.getRedFlagDetected() != null && c.getRedFlagDetected()) {
             sb.append("⚠️ RED FLAG PRESENT: ").append(valOr(c.getRedFlagDetails(), "Urgent symptoms detected during interview.")).append("\n\n");
         } else {
-            sb.append("No acute red flag criteria triggered during kiosk intake.\n\n");
+            sb.append("No red-flag symptoms identified from the information provided.\n\n");
         }
 
-        // 13. Missing / Not Reported Information
-        sb.append("13. MISSING / NOT REPORTED INFORMATION:\n");
+        // 14. MISSING / NOT REPORTED
+        sb.append("14. MISSING / NOT REPORTED:\n");
         List<String> missing = new ArrayList<>();
-        if (state.getPastSurgicalHistory() == null) missing.add("Surgical History: Not reported");
-        if (state.getAllergies() == null) missing.add("Drug/Food Allergies: Not reported");
-        if (state.getFamilyHistory() == null) missing.add("Family History: Not reported");
-        if (state.getPersonalLifestyle() == null) missing.add("Personal Lifestyle/Habits: Not reported");
-        if (state.getCharacter() == null) missing.add("Symptom Character/Quality: Not reported");
-        sb.append(String.join("\n", missing)).append("\n\n");
+        if (state.getPastMedicalHistory() == null) missing.add("- Past Medical History: Not reported");
+        if (state.getPastSurgicalHistory() == null) missing.add("- Surgical History: Not reported");
+        if (state.getCurrentMedicines() == null) missing.add("- Current Medications: Not reported");
+        if (state.getAllergies() == null) missing.add("- Drug/Food Allergies: Not reported");
+        if (state.getFamilyHistory() == null) missing.add("- Family History: Not reported");
+        if (state.getPersonalLifestyle() == null) missing.add("- Personal/Lifestyle History: Not reported");
+        if (state.getCharacter() == null) missing.add("- Symptom Character/Quality: Not reported");
+        if (missing.isEmpty()) {
+            sb.append("Comprehensive intake details captured.\n\n");
+        } else {
+            sb.append(String.join("\n", missing)).append("\n\n");
+        }
 
-        // 14. Concise Pre-Consultation Summary
-        sb.append("14. CONCISE PRE-CONSULTATION SUMMARY:\n");
-        sb.append(String.format(
-                "Patient %s, %s presenting with %s for %s. Discomfort severity rated at %s, aggravated by %s. " +
-                        "Past medical history notable for %s; current medications: %s. " +
-                        "Preliminary AYUSH tendency indicates %s. Prepared for physician clinical review.",
-                patient.getName(),
-                patient.getAge() != null ? patient.getAge() + "y" : "",
-                valOr(state.getChiefComplaint(), "reported complaint"),
-                valOr(state.getDuration(), "unspecified duration"),
-                valOr(state.getSeverity(), "unspecified severity"),
-                valOr(state.getAggravatingFactors(), "unspecified triggers"),
+        // 15. CONCISE PRE-CONSULTATION SUMMARY (3-5 lines for attending doctor)
+        sb.append("15. CONCISE PRE-CONSULTATION SUMMARY:\n");
+        sb.append("1. ").append(String.format("Patient %s (%s, %s) presents with %s of %s duration, rated at %s severity.",
+                valOr(patient.getName(), "Patient"),
+                patient.getAge() != null ? patient.getAge() + "y" : "Age unrecorded",
+                valOr(patient.getGender(), "Gender unrecorded"),
+                valOr(state.getChiefComplaint(), "reported symptoms"),
+                valOr(state.getDuration(), "unspecified"),
+                valOr(state.getSeverity(), "unspecified"))).append("\n");
+        sb.append("2. ").append(String.format("Key aggravating factors: %s. Associated symptoms: %s. Pertinent negatives: %s.",
+                valOr(state.getAggravatingFactors(), "none reported"),
+                valOr(state.getAssociatedSymptoms(), "none reported"),
+                !state.getPertinentNegatives().isEmpty() ? String.join(", ", state.getPertinentNegatives()) : "none reported")).append("\n");
+        sb.append("3. ").append(String.format("Medical/surgical background: %s. Current medications: %s. Known allergies: %s.",
                 valOr(state.getPastMedicalHistory(), "none reported"),
                 valOr(state.getCurrentMedicines(), "none reported"),
-                dominant
-        )).append("\n");
+                valOr(state.getAllergies(), "none reported"))).append("\n");
+        sb.append("4. ").append(String.format("AYUSH intake indicates %s Agni, %s Nidra, %s Mala, and %s constitutional tendency.",
+                valOr(ayush.get("agni"), valOr(state.getAyushAgni(), "normal")),
+                valOr(ayush.get("nidra"), valOr(state.getAyushNidra(), "regular")),
+                valOr(ayush.get("mala"), valOr(state.getAyushMala(), "regular")),
+                dominant)).append("\n");
+        sb.append("5. Prepared for physician clinical examination, differential diagnosis, and consultation.\n\n");
+
+        // 16. MANDATORY VERIFICATION NOTICE
+        sb.append("16. MANDATORY NOTICE:\n");
+        sb.append("AI-generated pre-consultation summary. Review and verification by a qualified healthcare professional is required.\n");
 
         return sb.toString();
     }
@@ -1393,6 +1654,59 @@ public class AssessmentService {
             return l.contains("hing") ? "hinglish" : "hi";
         }
         return "en";
+    }
+
+    private String detectLanguageSwitch(String currentLang, String userText) {
+        if (userText == null || userText.isBlank()) return currentLang;
+
+        long devanagariCount = userText.codePoints().filter(c -> c >= 0x0900 && c <= 0x097F).count();
+        // Strong evidence of Devanagari Hindi
+        if (devanagariCount >= 3) {
+            return "hi";
+        }
+
+        String lower = userText.toLowerCase(Locale.ROOT).trim();
+
+        // If currently Hindi:
+        if ("hi".equalsIgnoreCase(currentLang)) {
+            if (isExplicitEnglishSentence(lower)) {
+                return "en";
+            }
+            if (isExplicitHinglishSentence(lower)) {
+                return "hinglish";
+            }
+            return "hi";
+        }
+
+        // If currently Hinglish:
+        if ("hinglish".equalsIgnoreCase(currentLang)) {
+            if (isExplicitEnglishSentence(lower) && !containsHinglishMarkers(lower)) {
+                return "en";
+            }
+            return "hinglish";
+        }
+
+        // If currently English:
+        if ("en".equalsIgnoreCase(currentLang)) {
+            if (isExplicitHinglishSentence(lower) || containsHinglishMarkers(lower)) {
+                return "hinglish";
+            }
+            return "en";
+        }
+
+        return currentLang;
+    }
+
+    private boolean containsHinglishMarkers(String text) {
+        return text.matches(".*\\b(hai|hain|ho|raha|rahi|rahe|hota|hoti|hote|karta|karti|karte|dard|bukhar|jukham|khansi|neend|bhookh|pet|khana|zyada|bahut|halka|tez|pehle|aaj|kal|din|hafte|mahine|dawai|kripya|nahi|aaram)\\b.*");
+    }
+
+    private boolean isExplicitEnglishSentence(String text) {
+        return text.matches(".*\\b(i have|i am|i feel|since yesterday|for the past|it hurts|my knee|my head|getting worse|no medication|every day|at night|started after)\\b.*");
+    }
+
+    private boolean isExplicitHinglishSentence(String text) {
+        return text.matches(".*\\b(mujhe|mere|meri|mera|humko|aap|kripya|ho raha|ho rahi|lag raha|badh jata|badh jati)\\b.*");
     }
 
     private String now() {
