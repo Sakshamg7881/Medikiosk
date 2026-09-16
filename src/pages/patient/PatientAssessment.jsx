@@ -308,41 +308,62 @@ export function PatientAssessment() {
       }
 
       recognition.onerror = (event) => {
-        console.warn('Speech recognition error event:', event.error)
+        console.warn('[SpeechRecognition Error]', event.error, event.message)
         const isHindi = currentLang === 'hi'
-        if (event.error === 'not-allowed' || event.error === 'service-not-allowed') {
+
+        if (event.error === 'aborted') {
+          // Quietly return to idle without scary errors
+          setVoiceState('IDLE')
+          return
+        }
+
+        if (event.error === 'network') {
           setVoiceNotice(
             isHindi
-              ? 'माइक्रोफ़ोन अनुमति नहीं मिली। कृपया ब्राउज़र में अनुमति दें या लिखकर उत्तर दें।'
-              : 'Microphone permission denied. Please grant microphone access in browser settings or type instead.'
+              ? 'वॉयस पहचान सेवा अनुपलब्ध है। कृपया पुनः प्रयास करें या लिखकर उत्तर दें।'
+              : 'Speech recognition service is unavailable. Please try again or type your response.'
+          )
+          setVoiceState('IDLE')
+        } else if (event.error === 'not-allowed') {
+          setVoiceNotice(
+            isHindi
+              ? 'माइक्रोफ़ोन एक्सेस अवरुद्ध है। कृपया माइक्रोफ़ोन की अनुमति दें।'
+              : 'Microphone access is blocked. Please allow microphone permission.'
+          )
+          setVoiceState('IDLE')
+        } else if (event.error === 'service-not-allowed') {
+          setVoiceNotice(
+            isHindi
+              ? 'इस ब्राउज़र में वॉयस पहचान सेवा उपलब्ध नहीं है।'
+              : 'Speech recognition is unavailable in this browser.'
           )
           setVoiceState('IDLE')
         } else if (event.error === 'audio-capture') {
           setVoiceNotice(
             isHindi
-              ? 'माइक्रोफ़ोन नहीं मिला या किसी अन्य ऐप द्वारा उपयोग में है।'
-              : 'No microphone detected or microphone is in use by another application.'
-          )
-          setVoiceState('IDLE')
-        } else if (event.error === 'network') {
-          setVoiceNotice(
-            isHindi
-              ? 'वॉयस नेटवर्क कनेक्शन त्रुटि। कृपया इंटरनेट जांचें या लिखकर उत्तर दें।'
-              : 'Speech recognition network error. Please check your connection or type your symptoms.'
+              ? 'कोई माइक्रोफ़ोन नहीं मिला। कृपया अपना माइक्रोफ़ोन जांचें।'
+              : 'No microphone was detected. Please check your microphone.'
           )
           setVoiceState('IDLE')
         } else if (event.error === 'no-speech') {
           setVoiceNotice(
             isHindi
-              ? 'कोई आवाज नहीं सुनाई दी। कृपया माइक्रोफ़ोन के पास आकर बोलें।'
-              : 'No speech was detected. Please try speaking closer to the microphone.'
+              ? 'कोई आवाज़ नहीं पहचानी गई। कृपया पुनः प्रयास करें।'
+              : 'No speech detected. Please try again.'
           )
           setVoiceState(inputMessage.trim() ? 'READY' : 'IDLE')
+        } else if (event.error === 'language-not-supported') {
+          setVoiceNotice(
+            isHindi
+              ? 'इस ब्राउज़र में चुनी गई भाषा के लिए वॉयस पहचान समर्थित नहीं है।'
+              : 'Voice recognition does not support the selected language in this browser.'
+          )
+          setVoiceState('IDLE')
         } else {
           setVoiceNotice(
             isHindi
               ? `वॉयस इनपुट सूचना: ${event.error}। कृपया पुनः प्रयास करें या लिखें।`
-              : `Voice notice: ${event.error}. You can retry speaking or type your answer.`
+              : `Speech service notice: ${event.error}. Please try again or type your response.`
           )
           setVoiceState('IDLE')
         }

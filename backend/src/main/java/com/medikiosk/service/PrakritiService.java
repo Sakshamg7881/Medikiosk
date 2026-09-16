@@ -19,46 +19,69 @@ public class PrakritiService {
             String agni = answers.get("agni") != null ? answers.get("agni").toString().toLowerCase(Locale.ROOT) : "";
             String nidra = answers.get("nidra") != null ? answers.get("nidra").toString().toLowerCase(Locale.ROOT) : "";
             String mala = answers.get("mala") != null ? answers.get("mala").toString().toLowerCase(Locale.ROOT) : "";
-            String generalAyush = answers.get("ayushGeneral") != null ? answers.get("ayushGeneral").toString().toLowerCase(Locale.ROOT) : "";
-
-            // Score Agni (Appetite / Digestion)
-            if (matches(agni, "gas", "bloat", "irregular", "vishama", "kam", "anischit", "variable")) {
-                vata += 3;
-            } else if (matches(agni, "tez", "jalan", "acidity", "tikshna", "burning", "heartburn", "sharp", "intense")) {
-                pitta += 3;
-            } else if (matches(agni, "dheema", "manda", "slow", "heavy", "bhari", "low")) {
-                kapha += 3;
-            } else {
-                vata += 1;
-                pitta += 1;
-                kapha += 1;
+            String aharaVihara = answers.get("aharaVihara") != null ? answers.get("aharaVihara").toString().toLowerCase(Locale.ROOT) : "";
+            if (aharaVihara.isBlank() && answers.get("ayushGeneral") != null) {
+                aharaVihara = answers.get("ayushGeneral").toString().toLowerCase(Locale.ROOT);
             }
 
-            // Score Nidra (Sleep)
-            if (matches(nidra, "halki", "light", "disturbed", "khulti", "restless", "kam", "tut-tut")) {
-                vata += 3;
-            } else if (matches(nidra, "normal", "moderate", "6-7", "sound", "peaceful", "aaram")) {
-                pitta += 3;
-            } else if (matches(nidra, "gehri", "deep", "heavy", "aalas", "8+", "der", "excessive")) {
-                kapha += 3;
-            } else {
-                vata += 1;
-                pitta += 1;
-                kapha += 1;
+            // 1. Score Agni (Appetite / Digestion)
+            if (isReported(agni)) {
+                if (matches(agni, "gas", "bloat", "irregular", "vishama", "variable", "kam bhookh", "bhookh kam", "utar-chadhav", "उतार-चढ़ाव", "गैस")) {
+                    vata += 3;
+                } else if (matches(agni, "tez", "jalan", "acidity", "tikshna", "burning", "heartburn", "sharp", "intense", "acid", "sour", "तेज भूख", "एसिडिटी")) {
+                    pitta += 3;
+                } else if (matches(agni, "dheema", "manda", "slow", "heavy", "bhari", "low", "sluggish", "heaviness", "धीमा", "भारीपन", "भारी लगना")) {
+                    kapha += 3;
+                } else if (matches(agni, "normal", "balanced", "santulit", "samanya", "theek", "theek rehta", "regular", "संतुलित", "सामान्य")) {
+                    vata += 1;
+                    pitta += 1;
+                    kapha += 1;
+                }
             }
 
-            // Score Mala & Environment / Tolerance
-            String combinedMala = mala + " " + generalAyush;
-            if (matches(combinedMala, "kabz", "dry", "hard", "constipat", "thand", "cold", "chilly")) {
-                vata += 3;
-            } else if (matches(combinedMala, "loose", "soft", "garmi", "heat", "sweat", "pasina", "burning", "frequent")) {
-                pitta += 3;
-            } else if (matches(combinedMala, "heavy", "sluggish", "der se", "steady", "sehan", "mucus")) {
-                kapha += 3;
-            } else {
-                vata += 1;
-                pitta += 1;
-                kapha += 1;
+            // 2. Score Nidra (Sleep)
+            if (isReported(nidra)) {
+                if (matches(nidra, "halki", "light", "disturbed", "khulti", "restless", "kam", "tut-tut", "toot ti", "insomnia", "trouble", "less sleep", "waking up", "कम नींद", "टूटती", "हल्की")) {
+                    vata += 3;
+                } else if (matches(nidra, "sound", "peaceful", "moderate", "6-7", "6 to 7", "alert", "refreshed", "aaram", "sound & restful", "achhi", "शांत नींद", "अच्छी")) {
+                    pitta += 3;
+                } else if (matches(nidra, "gehri", "deep", "heavy", "aalas", "8+", "der", "excessive", "oversleeping", "गहरी", "भारी नींद", "आलस्य")) {
+                    kapha += 3;
+                } else if (matches(nidra, "normal", "balanced", "samanya", "theek", "regular", "सामान्य")) {
+                    vata += 1;
+                    pitta += 1;
+                    kapha += 1;
+                }
+            }
+
+            // 3. Score Mala (Elimination / Bowel)
+            if (isReported(mala)) {
+                if (matches(mala, "kabz", "dry", "hard", "constipat", "constipation", "irregular", "straining", "gas", "thand", "cold", "chilly", "कब्ज", "अनियमित")) {
+                    vata += 3;
+                } else if (matches(mala, "loose", "soft", "garmi", "heat", "sweat", "pasina", "burning", "frequent", "dast", "bar-bar", "urgency", "loose motion", "दस्त", "बार-बार")) {
+                    pitta += 3;
+                } else if (matches(mala, "heavy", "sluggish", "der se", "steady", "sehan", "mucus", "chipchip", "sticky", "heaviness", "धीमा", "भारी")) {
+                    kapha += 3;
+                } else if (matches(mala, "regular & clear", "regular", "clear", "saaf", "clean", "theek", "नियमित", "साफ")) {
+                    vata += 1;
+                    pitta += 1;
+                    kapha += 1;
+                }
+            }
+
+            // 4. Score Ahara & Vihara (Diet, Routine & Lifestyle)
+            if (isReported(aharaVihara)) {
+                if (matches(aharaVihara, "irregular meals", "irregular routine", "erratic", "fast", "travel", "dry food", "cold food", "skip meals", "अनियमित", "भागदौड़")) {
+                    vata += 3;
+                } else if (matches(aharaVihara, "spicy", "oily", "masaledar", "fried", "hot food", "competitive", "sour", "worse after spicy", "तला-भुना", "मसालेदार", "तीखा")) {
+                    pitta += 3;
+                } else if (matches(aharaVihara, "sedentary", "desk job", "sitting", "sweet", "heavy meals", "low activity", "inactive", "lazy", "daytime sleep", "बैठकर काम", "गतिहीन")) {
+                    kapha += 3;
+                } else if (matches(aharaVihara, "balanced & active", "balanced food & active", "active", "simple home meals", "simple home food", "exercise", "walk", "सक्रिय", "संतुलित भोजन", "सादा")) {
+                    vata += 1;
+                    pitta += 1;
+                    kapha += 1;
+                }
             }
         }
 
@@ -118,6 +141,12 @@ public class PrakritiService {
         result.put("disclaimer", disclaimer);
 
         return result;
+    }
+
+    private boolean isReported(String val) {
+        if (val == null || val.isBlank()) return false;
+        String lower = val.toLowerCase(Locale.ROOT).trim();
+        return !lower.equals("null") && !lower.contains("not reported") && !lower.contains("unrecorded") && !lower.contains("unspecified");
     }
 
     private boolean matches(String text, String... keywords) {

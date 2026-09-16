@@ -247,10 +247,10 @@ public class AssessmentService {
 
         if (isSufficient && userTurnCount >= 2) {
             // COMPLETE INTAKE!
-            if (!ayushMap.containsKey("agni")) ayushMap.put("agni", "Normal / Not reported");
-            if (!ayushMap.containsKey("nidra")) ayushMap.put("nidra", "Normal / Not reported");
-            if (!ayushMap.containsKey("mala")) ayushMap.put("mala", "Normal / Not reported");
-            if (!ayushMap.containsKey("aharaVihara")) ayushMap.put("aharaVihara", "Normal / Not reported");
+            if (!ayushMap.containsKey("agni")) ayushMap.put("agni", "Not reported");
+            if (!ayushMap.containsKey("nidra")) ayushMap.put("nidra", "Not reported");
+            if (!ayushMap.containsKey("mala")) ayushMap.put("mala", "Not reported");
+            if (!ayushMap.containsKey("aharaVihara")) ayushMap.put("aharaVihara", "Not reported");
             c.setAyushData(serializeJson(ayushMap));
 
             Map<String, Object> prakritiResult = prakritiService.calculatePrakriti(ayushMap, language);
