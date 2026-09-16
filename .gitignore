@@ -32,4 +32,7 @@ credentials*.json
 # Backend
 backend/target/
 backend/.mvn/
+backend/uploads/
 
+# Project archives
+*.zip
