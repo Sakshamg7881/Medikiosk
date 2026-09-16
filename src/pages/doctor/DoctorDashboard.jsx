@@ -388,8 +388,8 @@ export function DoctorDashboard() {
                         {/* Demographics */}
                         <span className="text-xs text-muted-foreground font-mono">
                           {c.patientAge ? `${c.patientAge}y` : ''}
-                          {c.patientGender ? ` â€¢ ${c.patientGender}` : ''}
-                          {c.preferredLanguage ? ` â€¢ Lang: ${c.preferredLanguage.toUpperCase()}` : ''}
+                          {c.patientGender ? ` • ${c.patientGender}` : ''}
+                          {c.preferredLanguage ? ` • Lang: ${c.preferredLanguage.toUpperCase()}` : ''}
                         </span>
 
                         {/* Status Badge */}
@@ -424,7 +424,7 @@ export function DoctorDashboard() {
                       <div className="flex flex-wrap items-center gap-3 text-xs text-muted-foreground pt-0.5">
                         {hasRedFlag && c.redFlagTerms && c.redFlagTerms.length > 0 && (
                           <span className="text-destructive font-mono font-semibold text-[11px]">
-                            âš ï¸ {c.redFlagTerms.join(', ')}
+                            ⚠️ {c.redFlagTerms.join(', ')}
                           </span>
                         )}
 
