@@ -515,7 +515,14 @@ export function DoctorCaseReview() {
                       <div className="flex items-center justify-between">
                         <span className="font-semibold text-foreground text-sm flex items-center gap-2">
                           <CheckCircle2 className="h-4 w-4 text-secondary" />
-                          <span>{doc.fileName}</span>
+                          <a
+                           href={`http://localhost:8080/api/cases/${caseId}/documents/${encodeURIComponent(doc.fileName)}`}
+                           target="_blank"
+                           rel="noopener noreferrer"
+                           className="text-primary hover:underline cursor-pointer"
+                        >
+                          {doc.fileName}
+                          </a>
                         </span>
                         <div className="flex items-center gap-2">
                           <Badge variant="secondary" className="font-mono text-[11px]">

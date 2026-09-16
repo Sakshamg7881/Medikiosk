@@ -13,6 +13,7 @@ import com.medikiosk.service.OcrService;
 import com.medikiosk.service.RedFlagService;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.http.HttpHeaders;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
@@ -22,6 +23,7 @@ import org.springframework.web.multipart.MultipartFile;
 import java.io.File;
 import java.io.FileOutputStream;
 import java.io.IOException;
+import java.nio.file.Files;
 import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
 import java.util.*;
@@ -183,6 +185,49 @@ public class CaseDocumentController {
                     .body(Map.of("error", "Failed to process document upload: " + e.getMessage()));
         }
     }
+
+    @GetMapping("/{caseId}/documents/{fileName:.+}")
+public ResponseEntity<byte[]> getDocument(
+        @PathVariable Long caseId,
+        @PathVariable String fileName) {
+
+    try {
+        File dir = new File("uploads/cases/" + caseId);
+
+        if (!dir.exists() || !dir.isDirectory()) {
+            return ResponseEntity.notFound().build();
+        }
+
+        String safeName = fileName.replaceAll("[^a-zA-Z0-9._-]", "_");
+
+        File[] matchingFiles = dir.listFiles((d, name) ->
+                name.endsWith("_" + safeName)
+        );
+
+        if (matchingFiles == null || matchingFiles.length == 0) {
+            return ResponseEntity.notFound().build();
+        }
+
+        File target = matchingFiles[matchingFiles.length - 1];
+        byte[] fileBytes = Files.readAllBytes(target.toPath());
+
+        String contentType = Files.probeContentType(target.toPath());
+
+        if (contentType == null) {
+            contentType = "application/octet-stream";
+        }
+
+        return ResponseEntity.ok()
+                .header(HttpHeaders.CONTENT_DISPOSITION,
+                        "inline; filename=\"" + safeName + "\"")
+                .header(HttpHeaders.CONTENT_TYPE, contentType)
+                .body(fileBytes);
+
+    } catch (IOException e) {
+        logger.error("Failed to read uploaded document: {}", e.getMessage());
+        return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).build();
+    }
+}
 
     @GetMapping("/{caseId}/summary")
     public ResponseEntity<?> getCaseSummary(@PathVariable Long caseId) {
